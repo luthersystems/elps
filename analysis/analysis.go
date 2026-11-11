@@ -82,6 +82,18 @@ type Config struct {
 	// whose expansions bind names, such as s:make-record.
 	SyntaxExpander MacroExpander
 
+	// GlobalIndex, when built from ExtraGlobals (NewGlobalIndex), lets
+	// Analyze find the workspace globals there instead of copying them
+	// into the root scope of each file. Resolution is the same. A run that
+	// analyzes many files with one ExtraGlobals should set it: the copy
+	// costs time in proportion to the workspace, for every file. An index
+	// built from another slice is ignored.
+	//
+	// With an index, RootScope.PackageSymbols holds only the
+	// package-qualified globals that the file looks up; the Scope lookup
+	// methods and Scope.EachPackageSymbol find all of them.
+	GlobalIndex *GlobalIndex
+
 	// Filename is the source file being analyzed.
 	Filename string
 }
@@ -128,6 +140,11 @@ type Result struct {
 	// have been overwritten by local definitions.
 	ExtraGlobals []ExternalSymbol
 
+	// GlobalIndex is Config.GlobalIndex when the analysis used it, and nil
+	// otherwise. A check that searches ExtraGlobals for a name on each file
+	// can ask it instead (GlobalIndex.Named) and do no work per global.
+	GlobalIndex *GlobalIndex
+
 	// WorkspaceRefs maps SymbolKey.String() to cross-file references.
 	// Copied from Config. Used by lint analyzers to check whether a symbol
 	// is referenced from other workspace files (e.g. unused-function check).
@@ -153,45 +170,13 @@ func Analyze(exprs []*lisp.LVal, cfg *Config) *Result {
 	}
 
 	root := NewScope(ScopeGlobal, nil, nil)
-	// Every global of the workspace goes in the root scope of every
-	// file. Make room for them one time: a map that grows entry by entry
-	// is copied again and again, and that was most of the cost of a
-	// workspace lint (luthersystems/elps#944).
-	qualified := 0
-	for i := range cfg.ExtraGlobals {
-		if cfg.ExtraGlobals[i].Package != "" {
-			qualified++
-		}
-	}
-	if qualified > 0 {
-		root.PackageSymbols = make(map[string]*Symbol, qualified)
-		root.bareNameIndex = make(map[string]*Symbol, qualified)
-	}
-	populateBuiltins(root)
-
-	// Add external symbols from workspace. One allocation holds them
-	// all; the root scope keeps each of them for the life of the result.
-	externals := make([]Symbol, len(cfg.ExtraGlobals))
-	for i := range cfg.ExtraGlobals {
-		ext := &cfg.ExtraGlobals[i]
-		sym := &externals[i]
-		*sym = Symbol{
-			Name:      ext.Name,
-			Package:   ext.Package,
-			Kind:      ext.Kind,
-			Source:    ext.Source,
-			Signature: ext.Signature,
-			DocString: ext.DocString,
-			Exported:  true,
-			External:  true,
-
-			GeneratedBy: ext.GeneratedBy,
-		}
-		if ext.Package != "" {
-			root.DefineQualifiedOnly(sym)
-			continue
-		}
-		root.Define(sym)
+	var index *GlobalIndex
+	if cfg.GlobalIndex.indexes(cfg.ExtraGlobals) {
+		index = cfg.GlobalIndex
+		populateBuiltins(root)
+		useGlobalIndex(root, index)
+	} else {
+		defineGlobals(root, cfg.ExtraGlobals)
 	}
 
 	a := &analyzer{
@@ -199,6 +184,7 @@ func Analyze(exprs []*lisp.LVal, cfg *Config) *Result {
 		result: &Result{
 			RootScope:           root,
 			ExtraGlobals:        cfg.ExtraGlobals,
+			GlobalIndex:         index,
 			WorkspaceRefs:       cfg.WorkspaceRefs,
 			recordMethodsByFile: cfg.RecordMethodsByFile,
 			filename:            cfg.Filename,
@@ -225,6 +211,40 @@ func Analyze(exprs []*lisp.LVal, cfg *Config) *Result {
 	}
 
 	return a.result
+}
+
+// defineGlobals defines the builtins and then every workspace global in
+// root, the order in which a later definition replaces an earlier one.
+func defineGlobals(root *Scope, globals []ExternalSymbol) {
+	// Every global of the workspace goes in the root scope of every
+	// file. Make room for them one time: a map that grows entry by entry
+	// is copied again and again, and that was most of the cost of a
+	// workspace lint (luthersystems/elps#944).
+	qualified := 0
+	for i := range globals {
+		if globals[i].Package != "" {
+			qualified++
+		}
+	}
+	if qualified > 0 {
+		root.PackageSymbols = make(map[string]*Symbol, qualified)
+		root.bareNameIndex = make(map[string]*Symbol, qualified)
+	}
+	populateBuiltins(root)
+
+	// Add external symbols from workspace. One allocation holds them
+	// all; the root scope keeps each of them for the life of the result.
+	externals := make([]Symbol, len(globals))
+	for i := range globals {
+		ext := &globals[i]
+		sym := &externals[i]
+		*sym = globalSymbol(ext)
+		if ext.Package != "" {
+			root.DefineQualifiedOnly(sym)
+			continue
+		}
+		root.Define(sym)
+	}
 }
 
 // WorkspaceRecordMethods returns the methods that the s:defmethod calls of

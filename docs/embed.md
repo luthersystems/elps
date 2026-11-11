@@ -2518,6 +2518,17 @@ it signals), the analyzer falls back to that name-based guess, and a name it
 guesses has `GeneratedBy` nil. Each call site is expanded at most once per
 analysis.
 
+A tool that analyzes many files with the same `Config.ExtraGlobals` should
+also set `Config.GlobalIndex` to `analysis.NewGlobalIndex(globals)`, built one
+time. Without it, the analysis of each file copies every global into its root
+scope, so a workspace costs files times globals. `LintFiles` and the language
+server set it. Results are the same. With an index, `RootScope.PackageSymbols`
+holds only the package-qualified globals the file looked up, so find a global
+with the `Scope` lookup methods, and list a package's symbols with
+`Scope.EachPackageSymbol`, not by ranging over the maps. A check that searches
+`Result.ExtraGlobals` for a name in each file can ask `Result.GlobalIndex`
+instead: `GlobalIndex.Named(name)` yields the same globals in the same order.
+
 ### Walking and expanding code
 
 Tools that analyze ELPS source need to know which parts of a form are code.

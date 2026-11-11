@@ -495,7 +495,10 @@ func BuildAnalysisConfig(cfg *LintConfig) (*analysis.Config, error) {
 	}
 
 	acfg := &analysis.Config{
-		ExtraGlobals:        prescan.AllDefs,
+		ExtraGlobals: prescan.AllDefs,
+		// One index for every file this run analyzes, and for the
+		// workspace scan below (luthersystems/elps#944).
+		GlobalIndex:         analysis.NewGlobalIndex(prescan.AllDefs),
 		PackageExports:      pkgExports,
 		PackageSymbols:      prescan.PkgAllSymbols,
 		DefForms:            prescan.DefForms,

@@ -58,6 +58,12 @@ type Server struct {
 	// before analysisCfgMu.
 	macroExpander *analysis.EnvMacroExpander
 	macroReloadMu sync.Mutex
+	// globalIndex is the GlobalIndex of globalIndexOf, the ExtraGlobals
+	// of the last config an analysis ran with (see withGlobalIndex).
+	// Both are guarded by globalIndexMu.
+	globalIndex   *analysis.GlobalIndex
+	globalIndexOf []analysis.ExternalSymbol
+	globalIndexMu sync.Mutex
 	// macroBase maps the name of each file whose macros in the env do not
 	// follow the stored scan to the scan they do follow, or to nil when
 	// none of them loaded. A reload that stopped at a limit keeps the old
@@ -459,7 +465,7 @@ func (s *Server) buildWorkspaceIndex() {
 	// Set it on the config so per-file analysis (and lint analyzers)
 	// can check cross-file references.
 	if s.rootPath != "" {
-		wsRefs := analysis.ScanWorkspaceRefs(s.rootPath, cfg, scanCfg)
+		wsRefs := analysis.ScanWorkspaceRefs(s.rootPath, s.withGlobalIndex(cfg), scanCfg)
 		cfg.WorkspaceRefs = wsRefs
 		s.workspaceRefsMu.Lock()
 		s.workspaceRefs = wsRefs
@@ -587,7 +593,49 @@ func (s *Server) getAnalysisConfig(uri string) *analysis.Config {
 	base := s.analysisCfg
 	s.analysisCfgMu.RUnlock()
 
-	return analysis.ConfigForFile(base, uriToPath(uri))
+	cfg := analysis.ConfigForFile(base, uriToPath(uri))
+	cfg.GlobalIndex = s.globalIndexFor(cfg.ExtraGlobals)
+	return cfg
+}
+
+// withGlobalIndex returns a copy of cfg whose GlobalIndex indexes its
+// ExtraGlobals, for an analysis. It never writes cfg: a request may be
+// reading it.
+func (s *Server) withGlobalIndex(cfg *analysis.Config) *analysis.Config {
+	if cfg == nil {
+		return nil
+	}
+	next := *cfg
+	next.GlobalIndex = s.globalIndexFor(next.ExtraGlobals)
+	return &next
+}
+
+// globalIndexFor returns the GlobalIndex of globals, the ExtraGlobals of
+// a config. It builds the index on the first analysis that asks for it
+// and gives the same one to every later analysis until ExtraGlobals
+// changes.
+//
+// The configs do not carry the index. A save replaces ExtraGlobals, and
+// an index stored with the new config would cost each save time and
+// memory in proportion to all the globals of the workspace, where the
+// rest of the save costs about the size of the saved file
+// (BenchmarkSaveDefinitions; luthersystems/elps#944). Built here, a
+// save costs nothing for it, and a run of analyses after the save, the
+// open documents and the references of the saved file, builds it once.
+func (s *Server) globalIndexFor(globals []analysis.ExternalSymbol) *analysis.GlobalIndex {
+	if len(globals) == 0 {
+		return nil
+	}
+	s.globalIndexMu.Lock()
+	defer s.globalIndexMu.Unlock()
+	// A save makes a new ExtraGlobals slice, so the first element tells
+	// one slice from another.
+	same := len(s.globalIndexOf) == len(globals) && &s.globalIndexOf[0] == &globals[0]
+	if !same {
+		s.globalIndex = analysis.NewGlobalIndex(globals)
+		s.globalIndexOf = globals
+	}
+	return s.globalIndex
 }
 
 // docView is the state of a document that one request works from: the
@@ -735,6 +783,7 @@ func (s *Server) crossFileRefs(sym *analysis.Symbol, docURI protocol.DocumentUri
 	s.analysisCfgMu.RLock()
 	cfg := s.analysisCfg
 	s.analysisCfgMu.RUnlock()
+	cfg = s.withGlobalIndex(cfg)
 	for _, ref := range analysis.ExtractFileRefs(analysis.AnalyzeFile(source, defPath, cfg), defPath) {
 		if ref.Export && ref.SymbolKey.String() == key {
 			refs = append(refs, ref)
@@ -874,6 +923,9 @@ func (s *Server) updateFileRefs(uri string) {
 	s.analysisCfgMu.RLock()
 	cfg := s.analysisCfg
 	s.analysisCfgMu.RUnlock()
+	// After the unlock: the first analysis after a save builds the index,
+	// and a save must not wait for that.
+	cfg = s.withGlobalIndex(cfg)
 
 	result := analysis.AnalyzeFile(source, filePath, cfg)
 	if result == nil {

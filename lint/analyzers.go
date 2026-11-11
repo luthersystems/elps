@@ -1703,13 +1703,9 @@ var AnalyzerDuplicateDefinition = &Analyzer{
 			wanted[extKey{name: key.name, pkg: pkg}] = true
 		}
 		extIndex := make(map[extKey]*analysis.ExternalSymbol, len(wanted))
-		for i := range pass.Semantics.ExtraGlobals {
-			if len(extIndex) == len(wanted) {
-				break
-			}
-			ext := &pass.Semantics.ExtraGlobals[i]
+		consider := func(ext *analysis.ExternalSymbol) {
 			if !isDefKind(ext.Kind) || ext.Source == nil {
-				continue
+				return
 			}
 			pkg := ext.Package
 			if pkg == "" {
@@ -1718,10 +1714,31 @@ var AnalyzerDuplicateDefinition = &Analyzer{
 			// Keep only the first external occurrence per key.
 			ek := extKey{name: ext.Name, pkg: pkg}
 			if !wanted[ek] {
-				continue
+				return
 			}
 			if _, exists := extIndex[ek]; !exists {
 				extIndex[ek] = ext
+			}
+		}
+		if index := pass.Semantics.GlobalIndex; index != nil {
+			// The globals of each wanted name, in the order of
+			// ExtraGlobals, so the first per key is the one the scan
+			// below finds.
+			names := make(map[string]bool, len(wanted))
+			for key := range wanted {
+				if !names[key.name] {
+					names[key.name] = true
+					for ext := range index.Named(key.name) {
+						consider(ext)
+					}
+				}
+			}
+		} else {
+			for i := range pass.Semantics.ExtraGlobals {
+				if len(extIndex) == len(wanted) {
+					break
+				}
+				consider(&pass.Semantics.ExtraGlobals[i])
 			}
 		}
 
@@ -3112,6 +3129,14 @@ var AnalyzerRemovedBuiltin = &Analyzer{
 				}
 			}
 			if pass.Semantics != nil {
+				if index := pass.Semantics.GlobalIndex; index != nil {
+					for ext := range index.Named(short) {
+						if ext.Package != pkg {
+							return true
+						}
+					}
+					return false
+				}
 				for _, ext := range pass.Semantics.ExtraGlobals {
 					if ext.Name == short && ext.Package != pkg {
 						return true

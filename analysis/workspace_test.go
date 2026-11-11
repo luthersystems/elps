@@ -2047,6 +2047,7 @@ func TestConfigForFile_CarriesEveryField(t *testing.T) {
 		SyntaxExpander:      &countingStubExpander{},
 		Filename:            "original.lisp",
 	}
+	src.GlobalIndex = NewGlobalIndex(src.ExtraGlobals)
 
 	// Every field must be non-zero above, or the test proves nothing.
 	sv := reflect.ValueOf(*src)

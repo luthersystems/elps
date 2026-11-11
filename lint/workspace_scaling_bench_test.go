@@ -61,8 +61,17 @@ func writeScalingWorkspace(tb testing.TB, files int) (string, []string) {
 // stay level when each file costs the same, and grow in proportion to
 // the workspace when the analysis of a file does work for each symbol of
 // the workspace.
+//
+// files=800 is the workspace of the issue: 800 files and 32000
+// definitions. It runs only with ELPS_BENCH_LARGE_WORKSPACE=1, because the
+// CI benchmark job runs every benchmark several times and this one takes
+// seconds per run.
 func BenchmarkLintWorkspaceScaling(b *testing.B) {
-	for _, files := range []int{25, 100, 400} {
+	sizes := []int{25, 100, 400}
+	if os.Getenv("ELPS_BENCH_LARGE_WORKSPACE") == "1" {
+		sizes = append(sizes, 800)
+	}
+	for _, files := range sizes {
 		b.Run(fmt.Sprintf("files=%d", files), func(b *testing.B) {
 			dir, paths := writeScalingWorkspace(b, files)
 			l := &Linter{Analyzers: DefaultAnalyzers()}
