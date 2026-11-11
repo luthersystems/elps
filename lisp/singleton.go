@@ -166,8 +166,7 @@ func singletonLValEqual(a, b *LVal) bool {
 		a.FunType == b.FunType &&
 		a.quoted == b.quoted &&
 		a.spliced == b.spliced &&
-		a.hasAux == b.hasAux &&
-		a.auxNoLoc == b.auxNoLoc &&
+		a.auxKind == b.auxKind &&
 		a.Native == b.Native &&
 		len(a.Cells) == len(b.Cells)
 }

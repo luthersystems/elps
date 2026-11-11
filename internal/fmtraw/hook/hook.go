@@ -20,3 +20,7 @@ var Meta any
 // SetMeta holds a func(*lisp.LVal, *fmtmeta.Meta), stored untyped.  It is
 // set by package lisp's init and consumed by package fmtraw's init.
 var SetMeta any
+
+// EnsureMeta holds a func(*lisp.LVal) *fmtmeta.Meta, stored untyped.  It is
+// set by package lisp's init and consumed by package fmtraw's init.
+var EnsureMeta any

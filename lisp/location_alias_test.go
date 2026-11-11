@@ -64,8 +64,8 @@ func TestNativeValuesCarryNoLocation(t *testing.T) {
 	t.Parallel()
 
 	for _, v := range []*LVal{Int(1), Float(1.5), String("s"), Symbol("sym"), Nil(), Bool(true)} {
-		if v.source != nil {
-			t.Errorf("%v carries a *token.Location (%+v); Go-constructed values must carry none (#362)", v.Type, v.source)
+		if v.loc() != nil {
+			t.Errorf("%v carries a *token.Location (%+v); Go-constructed values must carry none (#362)", v.Type, v.loc())
 		}
 		loc, ok := v.Source()
 		if ok {

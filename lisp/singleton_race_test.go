@@ -30,8 +30,8 @@ func TestSingletonRaceRegression(t *testing.T) {
 		iterations = 2000
 	)
 
-	origTrueSource := Bool(true).source
-	origFalseSource := Bool(false).source
+	origTrueSource := Bool(true).loc()
+	origFalseSource := Bool(false).loc()
 
 	rt := &Runtime{}
 	var wg sync.WaitGroup
@@ -59,17 +59,17 @@ func TestSingletonRaceRegression(t *testing.T) {
 
 	wg.Wait()
 
-	if Bool(true).source != origTrueSource {
-		t.Errorf("Bool(true).source mutated by concurrent macro stamping: got %+v want %+v",
-			Bool(true).source, origTrueSource)
+	if Bool(true).loc() != origTrueSource {
+		t.Errorf("Bool(true).loc() mutated by concurrent macro stamping: got %+v want %+v",
+			Bool(true).loc(), origTrueSource)
 	}
 	if Bool(true).macroExp() != nil {
 		t.Errorf("Bool(true).macroExp() mutated by concurrent macro stamping: got %+v",
 			Bool(true).macroExp())
 	}
-	if Bool(false).source != origFalseSource {
-		t.Errorf("Bool(false).source mutated by concurrent macro stamping: got %+v want %+v",
-			Bool(false).source, origFalseSource)
+	if Bool(false).loc() != origFalseSource {
+		t.Errorf("Bool(false).loc() mutated by concurrent macro stamping: got %+v want %+v",
+			Bool(false).loc(), origFalseSource)
 	}
 	if Bool(false).macroExp() != nil {
 		t.Errorf("Bool(false).macroExp() mutated by concurrent macro stamping: got %+v",

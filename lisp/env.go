@@ -943,7 +943,7 @@ func (env *LEnv) TaggedValue(typ *LVal, val *LVal) *LVal {
 	}
 	return &LVal{
 		//elps:aliases deliberate in-runtime alias: a tagged value is constructed and consumed inside the same runtime whose evaluator owns env.loc, and its location is display metadata only — nothing fixes up a tagged value's location after construction
-		source: env.loc,
+		source: locWord(env.loc),
 		Type:   LTaggedVal,
 		Str:    typ.Str,
 		Cells:  Cells{val},
@@ -1131,7 +1131,7 @@ func (env *LEnv) newLambda(pkg string, loc *token.Location, cells []*LVal) *LVal
 	fun := &LVal{
 		Type: LFun,
 		//elps:aliases deliberate in-runtime alias: a lambda's location is the defining form's parse location, already frozen before evaluation reaches this constructor, and the function value lives inside the same runtime as env.loc
-		source: loc,
+		source: locWord(loc),
 		Native: &funData{
 			// The function captures its defining environment directly.  A
 			// call binds the formals in a fresh child of it (see bind), which
@@ -1700,7 +1700,7 @@ func (env *LEnv) errorConditionUnchecked(condition string, v ...any) *LVal {
 		// evaluator (or a producing parser) may still fix that Location up
 		// in place.  Same reasoning as ErrorAssociate below (issue #366).
 		// Copy preserves nil, which is the "<native code>" convention.
-		source: env.loc.Copy(),
+		source: locWord(env.loc.Copy()),
 		Str:    condition,
 		Native: env.errorStack(), //elpsvet:allow-native the error's own captured stack, stamped at the capture point: checkDiagnosticPayload (lisp/template.go) refuses to publish any value carrying a CallStack, so an error never reaches a template with this payload
 		Cells:  cells,
@@ -1727,7 +1727,7 @@ func (env *LEnv) ErrorfAt(form *LVal, format string, v ...any) *LVal {
 	if src != nil && src.Pos >= 0 {
 		// Copy the form's location for the escaping error, just as Errorf
 		// copies env.loc (issues #366 and #431).
-		lerr.source = src.Copy() //elps:mutates sets the location on the fresh error newErrorConditionf allocated above, before notifying any observer
+		lerr.setPlainLoc(src.Copy()) //elps:mutates sets the location on the fresh error newErrorConditionf allocated above, before notifying any observer
 	}
 	return env.notifyError(lerr)
 }
@@ -1745,7 +1745,7 @@ func (env *LEnv) newErrorConditionf(condition string, format string, v ...any) *
 	lerr := &LVal{
 		// Copied, not aliased -- see ErrorCondition and ErrorAssociate
 		// (issue #366).
-		source: env.loc.Copy(),
+		source: locWord(env.loc.Copy()),
 		Type:   LError,
 		Str:    condition,
 		Native: env.errorStack(), //elpsvet:allow-native the error's own captured stack, stamped at the capture point: checkDiagnosticPayload (lisp/template.go) refuses to publish any value carrying a CallStack, so an error never reaches a template with this payload

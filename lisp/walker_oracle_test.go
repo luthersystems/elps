@@ -169,10 +169,10 @@ func oracleGraph(seed byte, native bool) *LVal {
 	}
 	root.quoted = seed&8 != 0
 	root.spliced = seed&16 != 0
-	root.source = &token.Location{File: "oracle-source.lisp", Pos: -1, Line: 7, Col: 2}
+	root.setPlainLoc(&token.Location{File: "oracle-source.lisp", Pos: -1, Line: 7, Col: 2})
 	root.setFmtMeta(&fmtmeta.Meta{OriginalText: "oracle", TrailingComment: &token.Token{
 		Text: "; retained comment", Source: &token.Location{File: "comment.lisp", Line: 7, Col: 10},
-	}}, false)
+	}})
 	root.setMacroExp(&macroExpansionInfo{
 		macroExpansionContext: &macroExpansionContext{
 			Name: "old", Args: []*LVal{leaf},
@@ -207,7 +207,7 @@ func oracleNodes(root *LVal) ([]oracleNode, error) {
 		}
 		// JSON walks token/location fields by value, not pointer address: an
 		// in-place metadata-only write must change the saved observation.
-		metadata, err := json.Marshal([]any{v.source, v.fmtMeta()})
+		metadata, err := json.Marshal([]any{v.loc(), v.fmtMeta()})
 		if err != nil {
 			return err
 		}
@@ -311,7 +311,7 @@ func oracleCompare(w oracleWalker, source, copyValue *LVal) error {
 		}
 		if w.stamps && a != b && needsStamp(a) {
 			info := b.macroExp()
-			if info == nil || info.Name != "oracle-macro" || info.ID <= 0 || b.source == nil || b.source.File != "oracle-call.lisp" || b.source.Pos != 17 {
+			if info == nil || info.Name != "oracle-macro" || info.ID <= 0 || b.loc() == nil || b.loc().File != "oracle-call.lisp" || b.loc().Pos != 17 {
 				return fmt.Errorf("missing descendant debug stamp at %s", s.path)
 			}
 		}
@@ -367,10 +367,10 @@ func oracleCheck(w oracleWalker, source *LVal) error {
 		}
 	}
 	if w.stamps {
-		if a == source || a.macroExp() == nil || a.macroExp().Name != "oracle-macro" || a.macroExp().ID != 1 || a.source == nil || a.source.File != "oracle-call.lisp" {
+		if a == source || a.macroExp() == nil || a.macroExp().Name != "oracle-macro" || a.macroExp().ID != 1 || a.loc() == nil || a.loc().File != "oracle-call.lisp" {
 			return errors.New("debug stamp path did not execute")
 		}
-		if a.macroExp() == b.macroExp() || a.source == b.source {
+		if a.macroExp() == b.macroExp() || a.loc() == b.loc() {
 			return errors.New("sibling expansions share writable metadata")
 		}
 		first, _ := oracleNodes(a) // Both traversals were validated above.
@@ -411,8 +411,8 @@ func oracleCheck(w oracleWalker, source *LVal) error {
 		// Do not invent an in-place kernel write as a VM operation. Copy/detach
 		// instead own mutable metadata, so exercise all directions there.
 		if !w.template {
-			if arm.source != nil {
-				arm.source.Line++
+			if arm.loc() != nil {
+				arm.loc().Line++
 			}
 			if arm.fmtMeta() != nil && arm.fmtMeta().TrailingComment != nil {
 				arm.fmtMeta().TrailingComment.Source.Line++

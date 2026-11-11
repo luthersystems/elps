@@ -314,16 +314,15 @@ func (d *detacher) detachNode(v *LVal) (*LVal, error) {
 	// native-constructed value stays nil-source rather than materializing a
 	// synthetic location.
 	//
-	// The copied Location carries no tooling record (see nodeAux), so the
-	// flags the struct copy brought along are cleared with it.  That drops
-	// the debugger-only macro-expansion record, as intended: its context
-	// aliases unevaluated argument values inside the source runtime, so a
-	// detached value carries none.  The formatter metadata is put back as
-	// a private copy.
-	cp.source = v.loc().Copy()
-	cp.hasAux, cp.auxNoLoc = false, false
+	// The struct copy brought v's tooling record along; setPlainLoc drops
+	// it with v's location.  That drops the debugger-only macro-expansion
+	// record, as intended: its context aliases unevaluated argument values
+	// inside the source runtime, so a detached value carries none.  The
+	// formatter metadata is put back as a private copy, built inside the
+	// copy's own carrier so it costs one allocation (see auxKind).
+	cp.setPlainLoc(v.loc().Copy())
 	if m := v.fmtMeta(); m != nil {
-		cp.setFmtMeta(detachMeta(m), true)
+		detachMetaInto(cp.ensureFmtMeta(), m)
 	}
 
 	// The struct copy above aliased v.Native.  Every payload a detachable
@@ -561,17 +560,15 @@ func detachCallStack(s *CallStack) *CallStack {
 	return cp
 }
 
-// detachMeta deep-copies format-preserving metadata, including the comment
-// tokens and their locations.
-func detachMeta(m *fmtmeta.Meta) *fmtmeta.Meta {
-	if m == nil {
-		return nil
-	}
-	cp := *m
-	cp.TrailingComment = copyToken(m.TrailingComment)
-	cp.LeadingComments = copyTokens(m.LeadingComments)
-	cp.InnerTrailingComments = copyTokens(m.InnerTrailingComments)
-	return &cp
+// detachMetaInto deep-copies format-preserving metadata m, including the
+// comment tokens and their locations, into dst.  It writes into storage the
+// caller provides, not a new object, so that Copy and detach can put the
+// copy in the new node's carrier (see auxKind).
+func detachMetaInto(dst, m *fmtmeta.Meta) {
+	*dst = *m
+	dst.TrailingComment = copyToken(m.TrailingComment)
+	dst.LeadingComments = copyTokens(m.LeadingComments)
+	dst.InnerTrailingComments = copyTokens(m.InnerTrailingComments)
 }
 
 func copyTokens(toks []*token.Token) []*token.Token {

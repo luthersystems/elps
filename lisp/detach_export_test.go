@@ -14,5 +14,5 @@ func SourceLocForTest(v *LVal) *token.Location {
 	if v == nil {
 		return nil
 	}
-	return v.source
+	return v.loc()
 }

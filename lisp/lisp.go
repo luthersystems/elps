@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"unsafe"
 
 	"github.com/luthersystems/elps/parser/token"
 )
@@ -315,9 +316,6 @@ func (v *LVal) MacroExpansion() (MacroExpansionMeta, bool) {
 		Name: ctx.Name,
 		ID:   mexp.ID,
 	}
-	// Copy, not a struct copy: the definition site is the Location of the
-	// macro's own node, which can hold that node's tooling record, and the
-	// record must not leave the package on a position (see nodeAux).
 	m.CallSite = ctx.CallSite.Copy()
 	m.DefSite = ctx.DefSite.Copy()
 	if len(ctx.Args) > 0 {
@@ -339,7 +337,7 @@ func (v *LVal) MacroExpansion() (MacroExpansionMeta, bool) {
 // The struct is 96 bytes, an allocator size class of its own, and one more
 // pointer field moves every value up to the 112-byte class
 // (TestLValSizeUnchanged pins the size; luthersystems/elps#944 measured the
-// difference).  That is why tooling data has no field here: see nodeAux.
+// difference).  That is why tooling data has no field here: see auxKind.
 type LVal struct {
 	// Native is generic storage for data which cannot be represented as an
 	// LVal (and thus can't be stored in Cells).
@@ -351,21 +349,23 @@ type LVal struct {
 	// through Source(), which returns a copy, and write it through
 	// SetSource().  See issue #362.
 	//
-	// Kernel code reads it through loc(), not directly: for a node that
-	// carries a tooling record and has no location, the pointer is the
-	// record's carrier and not a location (see nodeAux).
+	// It is an untyped word, not a *token.Location: for a node that
+	// carries a tooling record it points to the record's carrier, and
+	// auxKind says which (see auxKind for the design).  Kernel code reads
+	// it through loc() and writes it through setPlainLoc, setLoc and the
+	// other setters in nodeaux.go, never directly.
 	//
 	// The formatter's metadata and the debugger's macro-expansion record
-	// have no field of their own.  They ride on this Location and are
-	// reached through fmtMeta and macroExp (see nodeAux for the design).
-	// Formatting metadata exists only in format-preserving mode, and only
-	// this module's format tooling touches it, through internal/fmtraw
-	// (issue #382); format-preserving trees are never sealed, evaluated,
-	// or shared.  The macro-expansion record exists only while a debugger
-	// is attached; external packages read a snapshot through the
-	// MacroExpansion accessor, and the in-kernel stamp
-	// (stampMacroExpansion) is the only writer.
-	source *token.Location
+	// have no field of their own.  They ride in the carrier and are
+	// reached through fmtMeta and macroExp.  Formatting metadata exists
+	// only in format-preserving mode, and only this module's format
+	// tooling touches it, through internal/fmtraw (issue #382);
+	// format-preserving trees are never sealed, evaluated, or shared.  The
+	// macro-expansion record exists only while a debugger is attached;
+	// external packages read a snapshot through the MacroExpansion
+	// accessor, and the in-kernel stamp (stampMacroExpansion) is the only
+	// writer.
+	source unsafe.Pointer
 
 	// Str used by LSymbol and LString values
 	Str string
@@ -420,12 +420,10 @@ type LVal struct {
 	// becomes shared, so concurrent readers are race-free.
 	sealed bool
 
-	// hasAux reports that the tooling record on v's Location belongs to v.
-	// auxNoLoc reports that the Location exists only to carry that record,
-	// so v has no location.  Both are false in production and both occupy
-	// padding bytes.  See nodeAux.
-	hasAux   bool
-	auxNoLoc bool
+	// auxKind says what source points to: a location, or the carrier of
+	// v's tooling record.  It is auxNone in production and occupies a
+	// padding byte.  See auxKind.
+	auxKind auxKind
 }
 
 // Source returns a copy of v's originating location in source code.  The
@@ -451,12 +449,6 @@ func (v *LVal) Source() (token.Location, bool) {
 	src := v.loc()
 	if src == nil {
 		return nativeLocation(), false
-	}
-	// Copy drops the tooling record, which is not part of a position and
-	// must not leave the package on one (see nodeAux).  The plain struct
-	// copy is the production path: no Location carries a record there.
-	if locAux(src) != nil {
-		return *src.Copy(), true
 	}
 	return *src, true
 }

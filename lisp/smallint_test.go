@@ -121,7 +121,7 @@ func TestVerifySmallIntsDetectsAWrite(t *testing.T) {
 	require.Equal(t, "SharedInt(-16)", verifySmallInts(table))
 	table[0].sealed = true
 
-	table[1039].source = &token.Location{File: "f.lisp"}
+	table[1039].source = locWord(&token.Location{File: "f.lisp"})
 	require.Equal(t, "SharedInt(1023)", verifySmallInts(table))
 }
 

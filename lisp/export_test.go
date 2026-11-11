@@ -56,7 +56,7 @@ func SourceRefForTest(v *LVal) *token.Location {
 	if v == nil {
 		return nil
 	}
-	return v.source
+	return v.loc()
 }
 
 // IsSealedForTest reports v's seal bit without going through the exported

@@ -15,19 +15,19 @@ func TestStampMacroExpansion_NoContext(t *testing.T) {
 
 	inner := Symbol("+")
 	// Give it a synthetic source (Pos < 0).
-	inner.source = nil
+	inner.setPlainLoc(nil)
 	expr := SExpr([]*LVal{inner, Int(1), Int(2)})
-	expr.source = nil
+	expr.setPlainLoc(nil)
 
 	got := stampMacroExpansion(expr, callSite, nil, rt)
 
 	// The stamp is copy-on-write (issue #582): the returned tree is
 	// stamped, the input is untouched.
 	require.NotSame(t, expr, got)
-	assert.Equal(t, callSite, got.source)
-	assert.Equal(t, callSite, got.Cells[0].source)
-	assert.Nil(t, expr.source)
-	assert.Nil(t, inner.source)
+	assert.Equal(t, callSite, got.loc())
+	assert.Equal(t, callSite, got.Cells[0].loc())
+	assert.Nil(t, expr.loc())
+	assert.Nil(t, inner.loc())
 
 	// MacroExpansion should remain nil.
 	assert.Nil(t, got.macroExp())
@@ -46,11 +46,11 @@ func TestStampMacroExpansion_WithContext(t *testing.T) {
 	}
 
 	inner := Symbol("+")
-	inner.source = nil
+	inner.setPlainLoc(nil)
 	arg1 := Int(1)
 	arg2 := Int(2)
 	expr := SExpr([]*LVal{inner, arg1, arg2})
-	expr.source = nil
+	expr.setPlainLoc(nil)
 
 	got := stampMacroExpansion(expr, callSite, ctx, rt)
 
@@ -58,7 +58,7 @@ func TestStampMacroExpansion_WithContext(t *testing.T) {
 	// and the input is untouched.
 	for _, orig := range []*LVal{expr, inner, arg1, arg2} {
 		assert.Nil(t, orig.macroExp(), "the input was written to")
-		assert.Nil(t, orig.source, "the input was written to")
+		assert.Nil(t, orig.loc(), "the input was written to")
 	}
 	expr, inner, arg1, arg2 = got, got.Cells[0], got.Cells[1], got.Cells[2]
 
@@ -96,21 +96,21 @@ func TestStampMacroExpansion_PreservesRealSource(t *testing.T) {
 
 	// Node with real source (from unquote).
 	node := Symbol("x")
-	node.source = realSource
+	node.setPlainLoc(realSource)
 
 	// Node with synthetic source.
 	synth := Symbol("+")
-	synth.source = nil
+	synth.setPlainLoc(nil)
 
 	expr := SExpr([]*LVal{synth, node})
-	expr.source = nil
+	expr.setPlainLoc(nil)
 
 	got := stampMacroExpansion(expr, callSite, ctx, rt)
 
 	// Real source node is shared, keeps its source and has NO
 	// MacroExpansion.
 	assert.Same(t, node, got.Cells[1])
-	assert.Equal(t, realSource, node.source)
+	assert.Equal(t, realSource, node.loc())
 	assert.Nil(t, node.macroExp())
 
 	// Synthetic nodes are stamped on the copy; the input is untouched
@@ -120,7 +120,7 @@ func TestStampMacroExpansion_PreservesRealSource(t *testing.T) {
 	assert.Equal(t, callSite, stamped.loc().Copy())
 	require.NotNil(t, stamped.macroExp())
 	assert.Equal(t, "lisp:defun", stamped.macroExp().Name)
-	assert.Nil(t, synth.source)
+	assert.Nil(t, synth.loc())
 	assert.Nil(t, synth.macroExp())
 }
 
@@ -151,15 +151,15 @@ func TestStampMacroExpansion_SkipsSingletonTrue(t *testing.T) {
 	rt := StandardRuntime()
 	ctx := &macroExpansionContext{CallSite: callSite, Name: "lisp:defun"}
 
-	origSource := Bool(true).source
+	origSource := Bool(true).loc()
 
 	trueVal := Bool(true) // singleton
 	stampMacroExpansion(trueVal, callSite, ctx, rt)
 
 	assert.Nil(t, trueVal.macroExp(), "Bool(true) singleton was mutated (MacroExpansion)")
-	assert.Equal(t, origSource, trueVal.source, "Bool(true) singleton was mutated (Source)")
+	assert.Equal(t, origSource, trueVal.loc(), "Bool(true) singleton was mutated (Source)")
 	assert.Nil(t, Bool(true).macroExp(), "Bool(true) singleton corruption is shared")
-	assert.Equal(t, origSource, Bool(true).source, "Bool(true) singleton corruption is shared (Source)")
+	assert.Equal(t, origSource, Bool(true).loc(), "Bool(true) singleton corruption is shared (Source)")
 }
 
 // TestStampMacroExpansion_SkipsSingletonFalse mirrors the Bool(true)
@@ -169,15 +169,15 @@ func TestStampMacroExpansion_SkipsSingletonFalse(t *testing.T) {
 	rt := StandardRuntime()
 	ctx := &macroExpansionContext{CallSite: callSite, Name: "lisp:defun"}
 
-	origSource := Bool(false).source
+	origSource := Bool(false).loc()
 
 	falseVal := Bool(false) // singleton
 	stampMacroExpansion(falseVal, callSite, ctx, rt)
 
 	assert.Nil(t, falseVal.macroExp(), "Bool(false) singleton was mutated (MacroExpansion)")
-	assert.Equal(t, origSource, falseVal.source, "Bool(false) singleton was mutated (Source)")
+	assert.Equal(t, origSource, falseVal.loc(), "Bool(false) singleton was mutated (Source)")
 	assert.Nil(t, Bool(false).macroExp(), "Bool(false) singleton corruption is shared")
-	assert.Equal(t, origSource, Bool(false).source, "Bool(false) singleton corruption is shared (Source)")
+	assert.Equal(t, origSource, Bool(false).loc(), "Bool(false) singleton corruption is shared (Source)")
 }
 
 func TestRuntimeMacroExpSeq(t *testing.T) {
@@ -218,7 +218,7 @@ func TestMacroExpansionAccessor(t *testing.T) {
 	rt := StandardRuntime()
 	ctx := &macroExpansionContext{CallSite: callSite, Name: "lisp:defun", Args: args}
 	expr := SExpr([]*LVal{Symbol("+")})
-	expr.source = nil
+	expr.setPlainLoc(nil)
 	expr = stampMacroExpansion(expr, callSite, ctx, rt)
 
 	m, ok := expr.MacroExpansion()

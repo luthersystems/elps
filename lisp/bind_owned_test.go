@@ -32,16 +32,16 @@ func TestGoMacroMayRewriteItsArgumentList(t *testing.T) {
 	// located, so the expansion is located in place up to the arguments.
 	data := QExpr([]*LVal{Int(1), Int(2)})
 	form := SExpr([]*LVal{Symbol("take-first"), data, Int(3)})
-	form.source = &token.Location{File: "rewrite.lisp", Line: 7, Col: 1, Pos: 10}
+	form.setPlainLoc(&token.Location{File: "rewrite.lisp", Line: 7, Col: 1, Pos: 10})
 	if got := env.Eval(form); got.IsError() {
 		t.Fatalf("(take-first data 3): %v", got)
 	}
-	if data.source != nil {
-		t.Errorf("the binding the macro spliced in was located in place at %v (issue #582)", data.source)
+	if data.loc() != nil {
+		t.Errorf("the binding the macro spliced in was located in place at %v (issue #582)", data.loc())
 	}
 	for i, c := range data.Cells {
-		if c.source != nil {
-			t.Errorf("cell %d of the binding was located in place at %v (issue #582)", i, c.source)
+		if c.loc() != nil {
+			t.Errorf("cell %d of the binding was located in place at %v (issue #582)", i, c.loc())
 		}
 	}
 }

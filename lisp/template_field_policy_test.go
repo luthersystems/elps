@@ -17,11 +17,10 @@ func TestTemplatePlanFieldPolicy(t *testing.T) {
 		fields map[string]string
 	}{
 		{reflect.TypeFor[LVal](), map[string]string{
-			"Native":   "remapped: finite payload descriptors or admitted immutable native",
-			"source":   "shared-immutable: frozen location, Source returns a value copy; it also carries the tooling record (nodeAux)",
-			"hasAux":   "reset: the record is formatting-only metadata, never evaluated or mutated by VMs, or debug state, which mutable headers drop and shared sealed headers reject",
-			"auxNoLoc": "reset: set and cleared with hasAux",
-			"Str":      "scalar: string value", "Cells": "remapped: indexed backing view or immutable function code",
+			"Native":  "remapped: finite payload descriptors or admitted immutable native",
+			"source":  "shared-immutable: frozen location, Source returns a value copy; for a node with a tooling record, the record's carrier (auxKind), which the header drops with the record",
+			"auxKind": "reset: the record is formatting-only metadata, never evaluated or mutated by VMs, or debug state, which mutable headers drop and shared sealed headers reject; auxKind says what source points to and is written only with it",
+			"Str":     "scalar: string value", "Cells": "remapped: indexed backing view or immutable function code",
 			"Type": "scalar: value tag", "Int": "scalar: integer", "Float": "scalar: float",
 			"FunType": "scalar: function tag", "quoted": "scalar: quotation flag",
 			"spliced": "scalar: splice flag", "sealed": "scalar: immutable code flag",

@@ -331,20 +331,20 @@ func TestErrorAssociateCopiesLocation(t *testing.T) {
 	if res := env.ErrorAssociate(lerr); res != nil {
 		t.Fatalf("ErrorAssociate failed: %v", res)
 	}
-	if lerr.source == nil {
+	if lerr.loc() == nil {
 		t.Fatal("associated error should carry a source location")
 	}
-	if lerr.source == loc {
+	if lerr.loc() == loc {
 		t.Fatal("associated error aliases env.loc; it must store an independent copy")
 	}
-	if *lerr.source != *loc {
-		t.Fatalf("copied location differs: got %+v want %+v", *lerr.source, *loc)
+	if *lerr.loc() != *loc {
+		t.Fatalf("copied location differs: got %+v want %+v", *lerr.loc(), *loc)
 	}
 	// Mutate env.loc in place as evaluation would; the error's recorded
 	// location must not move with it.
 	loc.Line = 999
 	loc.File = "elsewhere.lisp"
-	if lerr.source.Line == 999 || lerr.source.File == "elsewhere.lisp" {
+	if lerr.loc().Line == 999 || lerr.loc().File == "elsewhere.lisp" {
 		t.Fatal("mutating env.loc changed the associated error's location")
 	}
 
@@ -354,8 +354,8 @@ func TestErrorAssociateCopiesLocation(t *testing.T) {
 	if res := env.ErrorAssociate(lerr2); res != nil {
 		t.Fatalf("ErrorAssociate failed: %v", res)
 	}
-	if lerr2.source != nil {
-		t.Fatalf("nil env.loc must yield nil error source, got %+v", lerr2.source)
+	if lerr2.loc() != nil {
+		t.Fatalf("nil env.loc must yield nil error source, got %+v", lerr2.loc())
 	}
 }
 
@@ -375,14 +375,14 @@ func TestErrorConstructorsCopyLocation(t *testing.T) {
 		"ErrorConditionf": env.ErrorConditionf("test-condition", "boom"),
 		"ErrorCondition":  env.ErrorCondition("test-condition", String("boom")),
 	} {
-		if lerr.source == nil {
+		if lerr.loc() == nil {
 			t.Fatalf("%s: error should carry a source location", name)
 		}
-		if lerr.source == loc {
+		if lerr.loc() == loc {
 			t.Fatalf("%s: error aliases env.loc; it must store an independent copy", name)
 		}
-		if *lerr.source != *loc {
-			t.Fatalf("%s: copied location differs: got %+v want %+v", name, *lerr.source, *loc)
+		if *lerr.loc() != *loc {
+			t.Fatalf("%s: copied location differs: got %+v want %+v", name, *lerr.loc(), *loc)
 		}
 	}
 
@@ -390,17 +390,17 @@ func TestErrorConstructorsCopyLocation(t *testing.T) {
 	// not move with it.
 	lerr := env.Errorf("boom")
 	loc.Line = 999
-	if lerr.source.Line == 999 {
+	if lerr.loc().Line == 999 {
 		t.Fatal("mutating env.loc changed an existing error's location")
 	}
 
 	// A nil env.loc must stay nil on the error (native-code convention).
 	env.loc = nil
-	if lerr := env.ErrorConditionf("test-condition", "boom"); lerr.source != nil {
-		t.Fatalf("nil env.loc must yield nil error source, got %+v", lerr.source)
+	if lerr := env.ErrorConditionf("test-condition", "boom"); lerr.loc() != nil {
+		t.Fatalf("nil env.loc must yield nil error source, got %+v", lerr.loc())
 	}
-	if lerr := env.ErrorCondition("test-condition", String("boom")); lerr.source != nil {
-		t.Fatalf("nil env.loc must yield nil error source, got %+v", lerr.source)
+	if lerr := env.ErrorCondition("test-condition", String("boom")); lerr.loc() != nil {
+		t.Fatalf("nil env.loc must yield nil error source, got %+v", lerr.loc())
 	}
 }
 

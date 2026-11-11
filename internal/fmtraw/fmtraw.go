@@ -42,14 +42,13 @@ var SetMeta func(v *lisp.LVal, m *fmtmeta.Meta)
 // EnsureMeta returns v's formatting metadata, attaching a fresh empty Meta
 // first when v has none.  The write path has the same ownership contract
 // as SetMeta.
-func EnsureMeta(v *lisp.LVal) *fmtmeta.Meta {
-	m := Meta(v)
-	if m == nil {
-		m = &fmtmeta.Meta{}
-		SetMeta(v, m)
-	}
-	return m
-}
+//
+// It is package lisp's function and not Meta followed by SetMeta: lisp
+// allocates the new Meta inside the node's record carrier, so a node the
+// parser stamps costs one allocation and not two (luthersystems/elps#947;
+// see auxKind in lisp/nodeaux.go).  SetMeta keeps the pointer it is given
+// and so needs a carrier beside it.
+var EnsureMeta func(v *lisp.LVal) *fmtmeta.Meta
 
 func init() {
 	get, ok := hook.Meta.(func(*lisp.LVal) *fmtmeta.Meta)
@@ -62,5 +61,9 @@ func init() {
 	if !ok {
 		panic("fmtraw: package lisp did not inject the SetMeta accessor")
 	}
-	Meta, SetMeta = get, set
+	ensure, ok := hook.EnsureMeta.(func(*lisp.LVal) *fmtmeta.Meta)
+	if !ok {
+		panic("fmtraw: package lisp did not inject the EnsureMeta accessor")
+	}
+	Meta, SetMeta, EnsureMeta = get, set, ensure
 }

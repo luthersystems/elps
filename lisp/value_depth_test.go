@@ -138,7 +138,7 @@ func TestValueWalkDepth(t *testing.T) {
 					if mode == "seal" && !got.IsSealed() {
 						t.Fatal("unsealed child")
 					}
-					if (mode == "locate" || mode == "stamp") && got.source == nil {
+					if (mode == "locate" || mode == "stamp") && got.loc() == nil {
 						t.Fatal("unlocated child")
 					}
 					got = got.Cells[0]

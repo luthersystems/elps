@@ -17,7 +17,7 @@ func TestSplitSymbolParts(t *testing.T) {
 	for _, s := range []string{"", "name", "λ", "pkg:name", ":keyword", ":", "pkg:", "::", "a:b:c", ":a:b", "a:::b", "a\x00:b"} {
 		t.Run(s, func(t *testing.T) {
 			sym := Quote(Symbol(s))
-			sym.source = &token.Location{File: "symbol", Line: 7}
+			sym.setPlainLoc(&token.Location{File: "symbol", Line: 7})
 			pieces := strings.Split(s, ":") // pre-optimization oracle
 			parts2 := splitSymbolParts(s)
 			ns, name, n := parts2.namespace, parts2.name, parts2.parts

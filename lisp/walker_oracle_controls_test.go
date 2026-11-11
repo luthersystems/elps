@@ -182,8 +182,8 @@ func checkOracleNegativeControls(t *testing.T, walkers []oracleWalker) {
 		}},
 		{"sibling cell slot sharing", "isolation", func(_, a, b *LVal) { b.Cells[3].Cells = a.Cells[3].Cells }},
 		{"sibling array slot sharing", "isolation", func(_, a, b *LVal) { b.Cells[5].Cells[1].Cells = a.Cells[5].Cells[1].Cells }},
-		{"sibling source location sharing", "isolation", func(_, a, b *LVal) { b.source = a.source }},
-		{"sibling format metadata sharing", "isolation", func(_, a, b *LVal) { b.setFmtMeta(a.fmtMeta(), false) }},
+		{"sibling source location sharing", "isolation", func(_, a, b *LVal) { b.setLoc(a.loc()) }},
+		{"sibling format metadata sharing", "isolation", func(_, a, b *LVal) { b.setFmtMeta(a.fmtMeta()) }},
 		{"zeroed bytes", "contents", func(_, a, _ *LVal) { a.Cells[0].Cells[3].Bytes()[0] = 0 }},
 		{"lost quote", "flags", func(_, a, _ *LVal) { a.quoted = false }},
 		{"retained debugger metadata", "retained macro", func(source, a, _ *LVal) { a.setMacroExp(source.macroExp()) }},
@@ -192,7 +192,7 @@ func checkOracleNegativeControls(t *testing.T, walkers []oracleWalker) {
 		{"macro location hidden field input write", "source changed", func(source, _, _ *LVal) { source.macroExp().CallSite.EndCol++ }},
 		{"comment location input write", "source changed", func(source, _, _ *LVal) { source.fmtMeta().TrailingComment.Source.Line++ }},
 		{"lost source location", "source/format", func(_, a, _ *LVal) { a.setLoc(nil) }},
-		{"lost format metadata", "source/format", func(_, a, _ *LVal) { a.setFmtMeta(nil, false) }},
+		{"lost format metadata", "source/format", func(_, a, _ *LVal) { a.setFmtMeta(nil) }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			w := mustOracleWalker(t, walkers, "LVal.Copy")

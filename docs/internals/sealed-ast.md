@@ -236,8 +236,8 @@ through an exported `LVal` field — the #333/#334 singleton race wrote
 shared parser nodes, and the post-seal leak fixes were `Meta`-adjacent
 writes — so those fields are unexported (#362 for `source`, #382 for
 `quoted`, `spliced`, and the formatter metadata and macro-expansion
-record, which ride on the node's `source` Location since
-luthersystems/elps#944, see `nodeAux` in `lisp/nodeaux.go`):
+record, which share the node's `source` word with its location since
+luthersystems/elps#944 and #947, see `auxKind` in `lisp/nodeaux.go`):
 
 - **Reads are mediated**: `Source()` returns a location copy, `IsQuoted()`
   reads the quote flag, `MacroExpansion()` returns a `MacroExpansionMeta`
