@@ -1019,6 +1019,14 @@ func (w *nativeWalker) marshaler(v reflect.Value, addr, text bool) {
 	if text {
 		minLen = 2
 	}
+	if m.Kind() == reflect.Pointer && m.IsNil() {
+		// An interface with the method holds a nil pointer.  The v1
+		// engine calls the method on it, and so does the writing pass.
+		// The value cannot be read to size the output, so it counts as
+		// the smallest one (luthersystems/elps#950).
+		w.add(minLen)
+		return
+	}
 	if !sizedMarshalerTypes[m.Type()] {
 		w.add(minLen)
 		return
