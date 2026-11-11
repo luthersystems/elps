@@ -18,14 +18,14 @@ import (
 )
 
 // nativeField is one struct field encoding/json writes, as nativeWalker needs
-// it: where the value is, how many bytes its member name costs, and the tag
+// it: where the value is, its member name as written, and the tag
 // options that change whether and how it is written.
 type nativeField struct {
 	typ       reflect.Type
 	isZero    func(reflect.Value) bool
 	name      string
+	nameJSON  string // `"` + HTML-escaped name + `":`, as encoding/json writes it
 	index     []int
-	nameLen   int // len(`"` + HTML-escaped name + `":`)
 	tag       bool
 	omitEmpty bool
 	omitZero  bool
@@ -152,7 +152,7 @@ func nativeTypeFields(t reflect.Type) ([]nativeField, string) {
 						tag:       tagged,
 						index:     index,
 						typ:       ft,
-						nameLen:   len(appendJSONString(nil, name)) + 1,
+						nameJSON:  string(appendJSONString(nil, name)) + ":",
 						omitEmpty: nativeTagHas(opts, "omitempty"),
 						omitZero:  nativeTagHas(opts, "omitzero"),
 						quoted:    quoted,

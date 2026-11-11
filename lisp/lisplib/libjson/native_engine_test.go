@@ -114,6 +114,10 @@ func TestNativeResultsAreEngineIndependent(t *testing.T) {
 		{name: "invalid UTF-8 key", native: map[string]any{"k\xff": 1}, wantErr: badKey},
 		{name: "invalid UTF-8 key, typed", native: map[engineString]int{"k\xff": 1}, wantErr: badKey},
 		{name: "invalid UTF-8 key from MarshalText", native: map[engineBadText]int{{}: 1}, wantErr: badKey},
+		// libjson quotes the text of a MarshalText value itself, so it
+		// writes each bad byte as the v1 engine does.
+		{name: "invalid UTF-8 from MarshalText", native: []any{engineBadText{}}, want: `["t\ufffd"]`},
+		{name: "invalid UTF-8 from MarshalText in a field", native: struct{ T *engineBadText }{&engineBadText{}}, want: `{"T":"t\ufffd"}`},
 		{name: "replacement character", native: map[string]any{"k\ufffd": "v\ufffd"}, want: "{\"k\xef\xbf\xbd\":\"v\xef\xbf\xbd\"}"},
 		{name: "invalid UTF-8 in bytes", native: []byte{0xff}, want: `"/w=="`},
 		{name: "invalid UTF-8 in an omitted field", native: engineTagged{O: ""}, want: `{"s":"","Q":"\"\""}`},

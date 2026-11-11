@@ -72,6 +72,11 @@ type encoder struct {
 	// document, and the budget is copied into every frame of the walk.
 	env *lisp.LEnv
 
+	// marshalJSON is the wrapper in which the native walk hands each
+	// MarshalJSON method to encoding/json (see writeMarshaler).  It is made
+	// on the first one and stays with the encoder in the pool.
+	marshalJSON *nativeMarshalJSON
+
 	memo nativeSpan
 
 	buf bytes.Buffer
@@ -432,6 +437,10 @@ func putEncoder(enc *encoder) {
 	enc.memo = nativeSpan{}
 	enc.memoMore = nil
 	enc.env = nil
+	if enc.marshalJSON != nil {
+		// A MarshalJSON method that panicked left its value here.
+		enc.marshalJSON.m = nil
+	}
 	if enc.buf.Cap() > encoderBufferRetentionLimit {
 		// bytes.Buffer has no way to shrink in place; dropping the whole
 		// value is how the oversized backing array is released.
@@ -872,11 +881,12 @@ func (enc *encoder) encodeLNative(v *lisp.LVal, g encodeGuard) error {
 		enc.buf.Write(b)
 		return nil
 	}
-	if err := enc.boundNative(v.Native, g.budget); err != nil {
+	est, err := enc.boundNative(v.Native, g.budget)
+	if err != nil {
 		return err
 	}
 	start := enc.buf.Len()
-	if err := enc.encodeNative(v.Native); err != nil {
+	if err := enc.encodeNative(v.Native, est); err != nil {
 		return err
 	}
 	enc.rememberNative(v, nativeMemo{start: start, end: enc.buf.Len()})
@@ -921,7 +931,31 @@ func (enc *encoder) keepNativeMemos(mark int) {
 	}
 }
 
-// encodeNative writes an embedder's Go value through encoding/json.
+// encodeNative writes an embedder's Go value, which boundNative has passed.
+//
+// libjson writes the value itself (writeNative), so the bytes are the same
+// on both JSON engines.  encoding/json writes only the values with a
+// MarshalJSON method, through json.Encoder (writeMarshaler).
+func (enc *encoder) encodeNative(v any, est int) error {
+	if _, own := v.(*ownMessage); own {
+		// A message is one MarshalJSON value, which writeNative gives to
+		// encoding/json as it is.  Going there directly saves the
+		// walker's encoder on every JSON-RPC response.
+		return enc.encodeNativeLegacy(v)
+	}
+	enc.wroteNative = true
+	mark := enc.buf.Len()
+	if err := enc.writeNative(v, est); err != nil {
+		enc.buf.Truncate(mark)
+		return err
+	}
+	return enc.checkNative(v, mark)
+}
+
+// encodeNativeLegacy writes an embedder's Go value through encoding/json, as
+// encodeLNative did before luthersystems/elps#802: no bound before
+// marshalling and no memo.  It exists so FuzzNativeEncodeMatchesLegacy can
+// compare encodeNative with encoding/json; nothing else calls it.
 //
 // It goes through json.Encoder rather than json.Marshal, and the difference is
 // one whole document's worth of bytes.  Both funnel into the same pooled
@@ -946,7 +980,7 @@ func (enc *encoder) keepNativeMemos(mark int) {
 // bytes are now already in enc.buf when checkLoadable runs, so a native that
 // fails the check is rolled back rather than never written.  Both are
 // invisible to a caller: an encode that errors discards its buffer.
-func (enc *encoder) encodeNative(v any) error {
+func (enc *encoder) encodeNativeLegacy(v any) error {
 	enc.wroteNative = true
 	mark := enc.buf.Len()
 	if err := json.NewEncoder(&enc.buf).Encode(v); err != nil {
@@ -956,6 +990,12 @@ func (enc *encoder) encodeNative(v any) error {
 		return nativeMarshalError(err)
 	}
 	enc.buf.Truncate(enc.buf.Len() - 1) // drop Encode's trailing newline
+	return enc.checkNative(v, mark)
+}
+
+// checkNative refuses the bytes native v wrote from mark on when this
+// package would not load them back, and removes them.
+func (enc *encoder) checkNative(v any, mark int) error {
 	b := enc.buf.Bytes()[mark:]
 	// elps#412.  The check below asks whether bytes this package did not
 	// produce can be read back.  An ownMessage is the one native for which
@@ -1016,13 +1056,6 @@ func nativeMarshalError(err error) error {
 // errNativeMarshalerJSON reports JSON from a MarshalJSON method that this
 // package cannot write or would not load back.
 var errNativeMarshalerJSON = fmt.Errorf("a marshal method returned JSON that is not valid or nests more than %d levels deep", jsonNestingLimit)
-
-// encodeNativeLegacy is encodeNative as encodeLNative called it before
-// luthersystems/elps#802: no bound before marshalling and no memo.  It exists
-// so FuzzNativeEncodeMatchesLegacy can compare the two; nothing else calls it.
-func (enc *encoder) encodeNativeLegacy(v any) error {
-	return enc.encodeNative(v)
-}
 
 // checkLoadable refuses native bytes this package would not read back.
 //

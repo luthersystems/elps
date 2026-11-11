@@ -3,6 +3,7 @@
 package libjson
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"math"
@@ -38,6 +39,8 @@ func FuzzNativeEncodeMatchesLegacy(f *testing.F) {
 		{2, 4, 4, 14, 5, 0, 4, 9, 1},
 		{3, 2, 4, 12, 7, 4, 13},
 		{2, 3, 4, 15, 4, 10, 200, 4, 11, 3},
+		// A pointer to a struct whose fuzzText writes invalid UTF-8.
+		{4, 9, 1, 0, 4},
 	} {
 		f.Add(seed)
 	}
@@ -54,6 +57,18 @@ func FuzzNativeEncodeMatchesLegacy(f *testing.F) {
 				wantB, wantLoadable, wantErr := dumped.bytes, dumped.loadable, dumpedErr
 				dumped2, dumpedErr2 := DefaultSerializer().dumpLimit(v, sn, dumpOptions{limit: lisp.MaxValueDepth, budget: b, meter: encodeMeter{}})
 				gotB, gotLoadable, gotErr := dumped2.bytes, dumped2.loadable, dumpedErr2
+				if wantErr == nil && JSONV2EngineForTest() {
+					// libjson writes a bad byte of a MarshalText text as
+					// the escape \ufffd on both engines (luthersystems/elps#950).
+					// encoding/json writes a raw U+FFFD on the v2 engine.
+					// No text here holds a valid U+FFFD, so turning each one
+					// into the escape gives the v1 engine's bytes, which may
+					// then pass the cap.
+					wantB = bytes.ReplaceAll(wantB, []byte("\ufffd"), []byte(`\ufffd`))
+					if b.maxBytes > 0 && len(wantB) > b.maxBytes {
+						wantB, wantErr = nil, encodeSizeError(b.maxBytes)
+					}
+				}
 				if errors.Is(gotErr, errNativeStringUTF8) || errors.Is(gotErr, errNativeKeyUTF8) {
 					// The walk refuses invalid UTF-8, which encoding/json
 					// writes as a replacement character.  The old encoder's
