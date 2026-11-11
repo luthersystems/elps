@@ -567,6 +567,21 @@ if err != nil {
 result := vm.FunCallContext(ctx, fn, lisp.SExpr(nil)) // "pong"
 ```
 
+### Per-VM Go caches
+
+A builtin must not keep state in its receiver, a closure or a package
+variable, because a template shares one builtin with every VM. A builtin that
+wants to remember work it already did keeps it on its own VM with
+`Runtime.VMCache(key)` and `Runtime.SetVMCache(key, v)` (a nil `v` deletes the
+entry). Use a key of an unexported type, so no other package can read or
+overwrite the entry.
+
+The cache is for Go values only. Templates do not publish it, and `NewVM` and
+a fork start with it empty, so a builtin's result must never depend on whether
+an entry is there: the cache may only save time. libregexp uses it to keep
+each pattern's compiled matcher and program size, so that only the first
+match of a pattern on a VM compiles it.
+
 ### Go function objects
 
 A Lisp library often returns an object as a closure over its state, and

@@ -94,6 +94,9 @@ var forkRuntimeFieldPolicy = map[string]string{
 	// Free storage of one VM.  A new VM starts with none: two VMs that
 	// shared a free list would hand one list to two calls.
 	"callLists": "not-carried",
+	// Work a library cached on one VM.  A new VM starts with none, so no
+	// two VMs share a cached Go value, which the cache does not lock.
+	"vmCache": "not-carried",
 }
 
 // TestForkRuntimeFieldCoverage fails when Runtime grows a field nobody has
