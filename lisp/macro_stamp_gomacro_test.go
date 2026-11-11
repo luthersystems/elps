@@ -61,7 +61,7 @@ func TestGoMacroExpansionIsLocatedInPlace(t *testing.T) {
 			// two is the macro's own integer.  three is a shared small
 			// integer, which cannot be located in place: the locate
 			// puts a located integer in inner's cell instead.
-			two, three := lisp.FreshInt(2), lisp.Int(3)
+			two, three := lisp.Int(2), lisp.Int(3)
 			inner := lisp.SExpr([]*lisp.LVal{times, two, three})
 			outer := lisp.SExpr([]*lisp.LVal{plus, arg, inner})
 			fresh = []*lisp.LVal{outer, plus, inner, times, two}
@@ -115,7 +115,7 @@ func TestGoMacroExpansionIsLocatedInPlace(t *testing.T) {
 		var fresh []*lisp.LVal
 		def := &goMacroDef{name: "m", formals: lisp.Formals("x"), fun: func(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 			plus := lisp.Symbol("lisp:+")
-			outer := lisp.SExpr([]*lisp.LVal{plus, args.Cells[0], lisp.FreshInt(1)})
+			outer := lisp.SExpr([]*lisp.LVal{plus, args.Cells[0], lisp.Int(1)})
 			fresh = []*lisp.LVal{outer, plus, outer.Cells[2]}
 			return outer
 		}}

@@ -1353,7 +1353,7 @@ func builtinToInt(env *LEnv, args *LVal) *LVal {
 	if lerr != nil {
 		return lerr
 	}
-	return Int(n)
+	return SharedInt(n)
 }
 
 // ToInt returns the int the to-int builtin returns for val, or the same error
@@ -1526,9 +1526,9 @@ func builtinErrorStack(env *LEnv, args *LVal) *LVal {
 		data.Set(String("function"), String(f.QualifiedFunName()))
 		if f.Source != nil && f.Source.Line > 0 {
 			data.Set(String("file"), String(f.Source.File))
-			data.Set(String("line"), Int(f.Source.Line))
+			data.Set(String("line"), SharedInt(f.Source.Line))
 			if f.Source.Col > 0 {
-				data.Set(String("column"), Int(f.Source.Col))
+				data.Set(String("column"), SharedInt(f.Source.Col))
 			}
 		}
 		frames = append(frames, m)
@@ -2884,7 +2884,7 @@ func builtinSearchSorted(env *LEnv, args *LVal) *LVal {
 		// builtin hands its callback arguments over; evaluating an
 		// S-expression here would call the predicate through a path that
 		// charges no step of its own for a native callback.
-		ok := env.callValueFunction(p, Cells{Int(i)}.List())
+		ok := env.callValueFunction(p, Cells{SharedInt(i)}.List())
 		if ok.IsError() {
 			sortErr = ok
 			return false
@@ -2894,7 +2894,7 @@ func builtinSearchSorted(env *LEnv, args *LVal) *LVal {
 	if !sortErr.IsNil() {
 		return sortErr
 	}
-	return Int(i)
+	return SharedInt(i)
 }
 
 // filterStartCapacity is where select and reject start their 'vector result.
@@ -3179,7 +3179,7 @@ func builtinMakeSequence(env *LEnv, args *LVal) *LVal {
 	var step *LVal
 	if len(args.Cells) == 2 {
 		if start.Type == LInt {
-			step = Int(1)
+			step = SharedInt(1)
 		} else {
 			step = Float(1.0)
 		}
@@ -3821,7 +3821,7 @@ func builtinLength(env *LEnv, args *LVal) *LVal {
 	if lerr != nil {
 		return lerr
 	}
-	return Int(n)
+	return SharedInt(n)
 }
 
 func builtinIsEmpty(env *LEnv, args *LVal) *LVal {
@@ -4359,7 +4359,7 @@ func builtinPow(env *LEnv, args *LVal) *LVal {
 // its counter can overflow to zero and hang inside this uninterruptible builtin.
 func powInt(a, b int) *LVal {
 	if b == 0 {
-		return Int(1)
+		return SharedInt(1)
 	}
 	if b < 0 {
 		return Float(math.Pow(float64(a), float64(b)))
@@ -4383,7 +4383,7 @@ func powInt(a, b int) *LVal {
 			base = product
 		}
 	}
-	return Int(atob)
+	return SharedInt(atob)
 }
 
 // checkedMulInt detects overflow by reversing the multiplication. MinInt * -1
@@ -4407,7 +4407,7 @@ func builtinMod(env *LEnv, args *LVal) *LVal {
 	if b.Int == 0 {
 		return env.Errorf("second argument is zero")
 	}
-	return Int(a.Int % b.Int)
+	return SharedInt(a.Int % b.Int)
 }
 
 func builtinAdd(env *LEnv, v *LVal) *LVal {
@@ -4431,7 +4431,7 @@ func (env *LEnv) Add(xs ...*LVal) (*LVal, error) {
 // differ.
 func addNumbers(env *LEnv, cells []*LVal) *LVal {
 	if len(cells) == 0 {
-		return Int(0)
+		return SharedInt(0)
 	}
 	for _, c := range cells {
 		if !c.IsNumeric() {
@@ -4444,7 +4444,7 @@ func addNumbers(env *LEnv, cells []*LVal) *LVal {
 		for _, c := range cells {
 			sum += c.Int
 		}
-		return Int(sum)
+		return SharedInt(sum)
 	}
 	sum := 0.0
 	for _, c := range cells {
@@ -4479,14 +4479,14 @@ func subNumbers(env *LEnv, cells []*LVal) *LVal {
 	}
 
 	if len(cells) == 0 {
-		return Int(0)
+		return SharedInt(0)
 	}
 
 	if len(cells) == 1 {
 		x := cells[0]
 		switch cells[0].Type {
 		case LInt:
-			return Int(-x.Int)
+			return SharedInt(-x.Int)
 		case LFloat:
 			return Float(-x.Float)
 		default:
@@ -4501,7 +4501,7 @@ func subNumbers(env *LEnv, cells []*LVal) *LVal {
 		for _, c := range cells[1:] {
 			diff -= c.Int
 		}
-		return Int(diff)
+		return SharedInt(diff)
 	}
 	diff := toFloat(cells[0])
 	for _, c := range cells[1:] {
@@ -4512,7 +4512,7 @@ func subNumbers(env *LEnv, cells []*LVal) *LVal {
 
 func builtinDiv(env *LEnv, v *LVal) *LVal {
 	if len(v.Cells) == 0 {
-		return Int(1)
+		return SharedInt(1)
 	}
 
 	for _, c := range v.Cells {
@@ -4524,7 +4524,7 @@ func builtinDiv(env *LEnv, v *LVal) *LVal {
 	if len(v.Cells) == 1 {
 		// This is kind of dumb but it catches the case 1/1 which should return
 		// an int.
-		return divInt(Int(1), v)
+		return divInt(SharedInt(1), v)
 	}
 
 	// Attempt to perform integer division when all operands are integers and
@@ -4556,7 +4556,7 @@ func divInt(x, args *LVal) *LVal {
 			return divFloat(x, SExpr(ys[i:]))
 		default:
 			// y divides x
-			x = Int(x.Int / y.Int)
+			x = SharedInt(x.Int / y.Int)
 		}
 	}
 	return x
@@ -4581,7 +4581,7 @@ func divFloat(x, args *LVal) *LVal {
 
 func builtinMul(env *LEnv, v *LVal) *LVal {
 	if len(v.Cells) == 0 {
-		return Int(1)
+		return SharedInt(1)
 	}
 	for _, c := range v.Cells {
 		if !c.IsNumeric() {
@@ -4593,7 +4593,7 @@ func builtinMul(env *LEnv, v *LVal) *LVal {
 	if numericListType(v.Cells) == LFloat {
 		return mulFloat(Float(1), v)
 	}
-	return mulInt(Int(1), v)
+	return mulInt(SharedInt(1), v)
 }
 
 // mulInt tries to perform multiplication as int if all arguments are int.
@@ -4608,7 +4608,7 @@ func mulInt(x, args *LVal) *LVal {
 		case y.Type != LInt:
 			return mulFloat(x, SExpr(ys[i:]))
 		default:
-			x = Int(x.Int * y.Int)
+			x = SharedInt(x.Int * y.Int)
 		}
 	}
 	return x
@@ -4708,7 +4708,7 @@ func debugStack(env *LEnv) *LVal {
 
 func addNumeric(a, b *LVal) *LVal {
 	if bothInt(a, b) {
-		return Int(a.Int + b.Int)
+		return SharedInt(a.Int + b.Int)
 	}
 	return Float(toFloat(a) + toFloat(b))
 }

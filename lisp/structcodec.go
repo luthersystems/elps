@@ -406,7 +406,7 @@ func (d *decoder) structFields(v *LVal, dst reflect.Value, path string, depth in
 func mapKeyValue(k MapKey) *LVal {
 	switch k.Type {
 	case LInt:
-		return Int(k.Int)
+		return SharedInt(k.Int)
 	case LSymbol:
 		return Symbol(k.Str)
 	default:
@@ -594,7 +594,7 @@ func Encode(x any) (*LVal, error) {
 	case string:
 		return String(v), nil
 	case int:
-		return Int(v), nil
+		return SharedInt(v), nil
 	case float64:
 		return Float(v), nil
 	case bool:
@@ -633,13 +633,13 @@ func encodeValue(rv reflect.Value, path string, depth int) (*LVal, error) {
 		if int64(int(n)) != n {
 			return nil, encodeErr(path, "cannot encode "+t.String()+" "+strconv.FormatInt(n, 10)+" as an int")
 		}
-		return Int(int(n)), nil
+		return SharedInt(int(n)), nil
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
 		u := rv.Uint()
 		if u > math.MaxInt {
 			return nil, encodeErr(path, "cannot encode "+t.String()+" "+strconv.FormatUint(u, 10)+" as an int")
 		}
-		return Int(int(u)), nil
+		return SharedInt(int(u)), nil
 	case reflect.Float32, reflect.Float64:
 		return Float(rv.Float()), nil
 	case reflect.String:

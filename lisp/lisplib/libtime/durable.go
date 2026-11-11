@@ -69,7 +69,7 @@ func NewDurableDurationCodec(name string) libjson.DurableCodec[time.Duration] {
 			if !ok {
 				return nil, fmt.Errorf("%s: not a duration", name)
 			}
-			return lisp.Int(int(d)), nil
+			return lisp.SharedInt(int(d)), nil
 		},
 		Load: func(_ *lisp.LEnv, _ int, p *lisp.LVal) (*lisp.LVal, error) {
 			if p.Type != lisp.LInt {

@@ -98,7 +98,7 @@ func mapOfValue(x any) *LVal {
 	case string:
 		return String(v)
 	case int:
-		return Int(v)
+		return SharedInt(v)
 	case float64:
 		return Float(v)
 	case bool:

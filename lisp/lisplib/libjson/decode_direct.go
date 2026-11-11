@@ -268,7 +268,7 @@ func (d *directDecoder) number() *lisp.LVal {
 	if d.opts.ExactIntegers {
 		// A short canonical int is what loadNumber makes of the same text.
 		if n, ok := smallCanonicalInt(raw); ok {
-			return lisp.Int(n)
+			return lisp.SharedInt(n)
 		}
 		v := loadNumber(string(raw))
 		if v.IsError() {

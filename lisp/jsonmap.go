@@ -97,7 +97,7 @@ func (m jsonMap) Set(k *LVal, v *LVal) *LVal {
 func (m jsonMap) Entries(cells []*LVal) *LVal {
 	n := len(m)
 	if n == 0 {
-		return Int(0)
+		return SharedInt(0)
 	}
 	if len(cells) < n {
 		return Errorf("buffer has insufficient length")
@@ -119,7 +119,7 @@ func (m jsonMap) Entries(cells []*LVal) *LVal {
 		i++
 	}
 	slices.SortFunc(cells[:i], comparePairKeyStr)
-	return Int(len(cells))
+	return SharedInt(len(cells))
 }
 
 // Keys builds the sorted key list directly rather than through Entries: one

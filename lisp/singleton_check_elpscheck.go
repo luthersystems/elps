@@ -85,7 +85,7 @@ func checkSingleton(_ *LVal) {
 }
 
 // checkSmallInt verifies that entry i of the shared integer table
-// (lisp/smallint.go) still holds the value it was built with.  Int calls it
+// (lisp/smallint.go) still holds the value it was built with.  SharedInt calls it
 // on every entry it hands out, so a write to a table integer is detected
 // the next time any code asks for that number.  It is a value-drift
 // detector with the limits checkSingleton documents above.
@@ -94,7 +94,7 @@ func checkSingleton(_ *LVal) {
 // having written to shared memory, and it stays a panic on purpose.
 func checkSmallInt(i int) {
 	if v := smallInts[i]; smallIntDrift(v, i) {
-		panic(sealViolation{msg: fmt.Sprintf("shared integer corruption detected: Int(%d) mutated\n  current=%+v", i+smallIntMin, v)})
+		panic(sealViolation{msg: fmt.Sprintf("shared integer corruption detected: SharedInt(%d) mutated\n  current=%+v", i+smallIntMin, v)})
 	}
 }
 
@@ -102,12 +102,12 @@ func checkSmallInt(i int) {
 // The kernel's location writers (lisp/nodeaux.go) call it: they do not
 // test the seal themselves, their callers do, and a caller that forgot
 // would store a location in an integer every Runtime shares.  Unlike the
-// drift check in Int, this one sees the write itself, so it also catches a
+// drift check in SharedInt, this one sees the write itself, so it also catches a
 // write of the value the field already holds.
 //
 // NOT LISP-REACHABLE (#367): the trigger is a kernel bug.
 func checkNotSharedInt(v *LVal) {
 	if isSmallInt(v) {
-		panic(sealViolation{msg: fmt.Sprintf("write to the shared integer Int(%d)", v.Int)})
+		panic(sealViolation{msg: fmt.Sprintf("write to the shared integer SharedInt(%d)", v.Int)})
 	}
 }

@@ -25,7 +25,7 @@ import (
 //
 // A process-wide side table maps weak value identities to the weak identity
 // of the Runtime that first used them.
-// Constructors cannot populate it — Int(1) has no idea which runtime it is
+// Constructors cannot populate it — SharedInt(1) has no idea which runtime it is
 // destined for — so the table is populated lazily: THE FIRST TOUCH ADOPTS.
 // The first instrumented sighting of a value (LEnv.Put, LEnv.PutGlobal, or
 // entry to the eval hot path) claims it for that sighting's Runtime.  Every

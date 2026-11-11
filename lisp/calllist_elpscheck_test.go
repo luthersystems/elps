@@ -15,7 +15,7 @@ import (
 func TestCallListPoison(t *testing.T) {
 	var p callLists
 	v, back := p.get(3)
-	cells := append(back[:0:3], Symbol("f"), FreshInt(1), FreshInt(2))
+	cells := append(back[:0:3], Symbol("f"), Int(1), Int(2))
 	v.Cells = cells[1:]
 	p.put(v, back)
 

@@ -609,7 +609,7 @@ func loadNumber(text string) *lisp.LVal {
 	// instead.
 	n, err := strconv.ParseInt(text, 10, strconv.IntSize)
 	if err == nil {
-		return lisp.Int(int(n))
+		return lisp.SharedInt(int(n))
 	}
 	// The integer is too large for a lisp int, so the only thing left is a
 	// float -- and taking one silently is the defect this option exists to

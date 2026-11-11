@@ -40,14 +40,14 @@ func makeOwnershipTestGarbage(t *testing.T, n int) ([]weak.Pointer[Runtime], []w
 		if res := InitializeUserEnv(env); res.Type == LError {
 			t.Fatal(res)
 		}
-		if res := env.Put(Symbol("x"), FreshInt(42)); res.Type == LError {
+		if res := env.Put(Symbol("x"), Int(42)); res.Type == LError {
 			t.Fatal(res)
 		}
 		// Construct and evaluate (lambda () (+ x 1)) without importing the
 		// parser (which would introduce an import cycle).
 		closure := env.Eval(SExpr([]*LVal{
 			Symbol("lambda"), SExpr(nil),
-			SExpr([]*LVal{Symbol("+"), Symbol("x"), FreshInt(1)}),
+			SExpr([]*LVal{Symbol("+"), Symbol("x"), Int(1)}),
 		}))
 		if closure.Type != LFun {
 			t.Fatalf("expected a closure, got %v", closure)
@@ -150,7 +150,7 @@ func TestOwnershipCheck_CatchesCrossRuntimePut(t *testing.T) {
 	envA := newOwnershipTestEnv()
 	envB := newOwnershipTestEnv()
 
-	v := SExpr([]*LVal{FreshInt(1), FreshInt(2), FreshInt(3)})
+	v := SExpr([]*LVal{Int(1), Int(2), Int(3)})
 	v.quoted = true
 	if lerr := envA.Put(Symbol("x"), v); lerr.Type == LError {
 		t.Fatalf("put in runtime A failed: %v", lerr)
@@ -169,7 +169,7 @@ func TestOwnershipCheck_CatchesCrossRuntimeEval(t *testing.T) {
 	envA := newOwnershipTestEnv()
 	envB := newOwnershipTestEnv()
 
-	v := FreshInt(42)
+	v := Int(42)
 	if res := envA.Eval(v); res.Type == LError {
 		t.Fatalf("eval in runtime A failed: %v", res)
 	}
@@ -188,10 +188,10 @@ func TestOwnershipCheck_CatchesCrossRuntimeOperand(t *testing.T) {
 		name    string
 		operand func() *LVal
 	}{
-		{"int", func() *LVal { return FreshInt(42) }},
+		{"int", func() *LVal { return Int(42) }},
 		{"string", func() *LVal { return String("s") }},
 		{"symbol", func() *LVal { return Symbol("x") }},
-		{"quoted list", func() *LVal { return QExpr([]*LVal{FreshInt(1)}) }},
+		{"quoted list", func() *LVal { return QExpr([]*LVal{Int(1)}) }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			envA := newOwnershipTestEnv()
@@ -218,7 +218,7 @@ func TestOwnershipCheck_CatchesCrossRuntimeOperand(t *testing.T) {
 func TestOwnershipCheck_SameRuntimeReuse(t *testing.T) {
 	env := newOwnershipTestEnv()
 
-	v := FreshInt(7)
+	v := Int(7)
 	for i := range 3 {
 		if res := env.Eval(v); res.Type == LError {
 			t.Fatalf("eval %d failed: %v", i, res)
@@ -264,7 +264,7 @@ func TestOwnershipCheck_ResetForgets(t *testing.T) {
 	envA := newOwnershipTestEnv()
 	envB := newOwnershipTestEnv()
 
-	v := FreshInt(9)
+	v := Int(9)
 	if lerr := envA.Put(Symbol("x"), v); lerr.Type == LError {
 		t.Fatalf("put in runtime A failed: %v", lerr)
 	}
@@ -312,7 +312,7 @@ func TestOwnershipCheck_SortedMapHeaderKeepsIdentity(t *testing.T) {
 }
 
 func TestOwnershipCheck_CollectedOwnerMessage(t *testing.T) {
-	msg := ownershipViolationMessage(nil, newOwnershipTestEnv().Runtime, FreshInt(42))
+	msg := ownershipViolationMessage(nil, newOwnershipTestEnv().Runtime, Int(42))
 	if !strings.Contains(msg, "owner runtime:  <collected>") {
 		t.Fatalf("message did not identify a collected owner: %s", msg)
 	}
@@ -335,7 +335,7 @@ func TestOwnershipCheck_SealedNodesExempt(t *testing.T) {
 	envA := newOwnershipTestEnv()
 	envB := newOwnershipTestEnv()
 
-	sealed := QExpr([]*LVal{FreshInt(1), FreshInt(2), FreshInt(3)})
+	sealed := QExpr([]*LVal{Int(1), Int(2), Int(3)})
 	sealed.SealAST()
 	if !sealed.IsSealed() {
 		t.Fatal("SealAST did not seal the node; this test would prove nothing")
@@ -360,7 +360,7 @@ func TestOwnershipCheck_SealedNodesExempt(t *testing.T) {
 
 	// The control: the same shape UNSEALED must still trip the gate,
 	// otherwise the pass above proves only that the checker is off.
-	unsealed := QExpr([]*LVal{FreshInt(1), FreshInt(2), FreshInt(3)})
+	unsealed := QExpr([]*LVal{Int(1), Int(2), Int(3)})
 	if lerr := envA.Put(Symbol("private"), unsealed); lerr.Type == LError {
 		t.Fatalf("put unsealed node in runtime A: %v", lerr)
 	}
@@ -378,7 +378,7 @@ func TestOwnershipCheck_CopyOfSealedIsChecked(t *testing.T) {
 	envA := newOwnershipTestEnv()
 	envB := newOwnershipTestEnv()
 
-	sealed := QExpr([]*LVal{FreshInt(4), FreshInt(5)})
+	sealed := QExpr([]*LVal{Int(4), Int(5)})
 	sealed.SealAST()
 	cp := sealed.Copy()
 	if cp.IsSealed() {
@@ -446,7 +446,7 @@ func TestOwnershipCheck_ClosureFreeBuiltinExempt(t *testing.T) {
 
 	// CONTROL 2: an ordinary non-function value of the same provenance still
 	// trips the gate, so the pass above is not "the checker is off".
-	private := QExpr([]*LVal{FreshInt(1)})
+	private := QExpr([]*LVal{Int(1)})
 	if lerr := envA.Put(Symbol("private"), private); lerr.Type == LError {
 		t.Fatalf("put list in runtime A: %v", lerr)
 	}
@@ -485,7 +485,7 @@ func TestOwnershipCheck_SealedASTExempt(t *testing.T) {
 	envB := newOwnershipTestEnv()
 
 	mk := func() *LVal {
-		v := SExpr([]*LVal{FreshInt(1), FreshInt(2), FreshInt(3)})
+		v := SExpr([]*LVal{Int(1), Int(2), Int(3)})
 		v.quoted = true
 		return v
 	}

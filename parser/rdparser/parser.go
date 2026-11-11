@@ -1033,9 +1033,9 @@ func (p *Parser) Symbol(sym string) *lisp.LVal {
 }
 
 func (p *Parser) Int(x int) *lisp.LVal {
-	// FreshInt and not Int: the literal gets this token's location, and a
+	// Int and not SharedInt: the literal gets this token's location, and a
 	// shared small integer cannot carry one.
-	return p.tokenLVal(lisp.FreshInt(x))
+	return p.tokenLVal(lisp.Int(x))
 }
 
 func (p *Parser) Float(x float64) *lisp.LVal {

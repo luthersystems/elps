@@ -128,7 +128,7 @@ func builtinAbs(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 		if abs < 0 {
 			return env.Errorf("integer overflow: absolute value overflows int")
 		}
-		return lisp.Int(abs)
+		return lisp.SharedInt(abs)
 	default:
 		return env.Errorf("argument is not a number: %v", x.Type)
 	}

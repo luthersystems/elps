@@ -148,7 +148,7 @@ func funcResultLVal[R funcResult](env *LEnv, out R, err error) *LVal {
 	case *string:
 		v = String(*p)
 	case *int:
-		v = Int(*p)
+		v = SharedInt(*p)
 	case *float64:
 		v = Float(*p)
 	case *bool:

@@ -619,13 +619,13 @@ func pathToStep(p Path) (*lisp.LVal, error) {
 	case *dotPath:
 		return lisp.String(v.key), nil
 	case *indexPath:
-		return lisp.Int(v.index), nil
+		return lisp.SharedInt(v.index), nil
 	case *iterPath:
 		return lisp.Symbol("*"), nil
 	case *rangePath:
-		cells := []*lisp.LVal{lisp.Symbol("range"), lisp.Int(v.from)}
+		cells := []*lisp.LVal{lisp.Symbol("range"), lisp.SharedInt(v.from)}
 		if !v.implicitTo {
-			cells = append(cells, lisp.Int(v.to))
+			cells = append(cells, lisp.SharedInt(v.to))
 		}
 		return lisp.QExpr(cells), nil
 	default:

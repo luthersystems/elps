@@ -58,7 +58,7 @@ func runRuntimeWalkerAt500K(t *testing.T, operation string) {
 	t.Helper()
 	const depth = 500_000
 	chain := func(leaf int) *lisp.LVal {
-		v := lisp.FreshInt(leaf)
+		v := lisp.Int(leaf)
 		for range depth {
 			v = lisp.SExpr([]*lisp.LVal{v})
 		}
