@@ -1583,6 +1583,9 @@ func (env *LEnv) RegisterBuiltins(funs ...LBuiltinDef) []*LVal {
 		if freeKeys != 0 {
 			v.funData().freeKeys = freeKeys
 		}
+		if dropsCallList(f) {
+			v.funData().dropsList = true
+		}
 		// putName is what names a bound builtin in a stack frame.  With no
 		// binding, the display name is set here; nothing binds the FID, so
 		// nothing replaces it.

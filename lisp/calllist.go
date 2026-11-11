@@ -22,10 +22,12 @@ import "reflect"
 //     receives the list itself (bindOwned), and it keeps neither the list
 //     nor a slice of its cells.  The elpscalllist analyzer
 //     (cmd/elpsvet/calllist.go) checks each entry on every build.
+//   - A library or host builtin or special operator registered through
+//     DropsArgList (lisp/dropsarglist.go), under the same rule.  The
+//     analyzer checks each one elps marks.
 //
 // Every other Go function keeps its list: a builtin may store the list it
-// is handed (list does), and nothing has checked that a library's or a
-// host's builtin does not.
+// is handed (list does).
 //
 // WHEN A LIST COMES BACK.  evalSExpr returns the list after the call
 // returns, and only when the result is not the tail-recursion mark that
@@ -106,11 +108,13 @@ var callListDropperCode = func() map[uintptr]bool {
 }()
 
 // dropsCallList reports whether def is a kernel special operator or
-// builtin whose argument list is dead once it returns.  Registration calls it; no call
-// does.
+// builtin whose argument list is dead once it returns, or a definition
+// marked with DropsArgList.  Registration calls it; no call does.
 func dropsCallList(def LBuiltinDef) bool {
-	op, ok := def.(*langBuiltin)
-	return ok && callListDropperCode[reflect.ValueOf(op.fun).Pointer()]
+	if op, ok := def.(*langBuiltin); ok {
+		return callListDropperCode[reflect.ValueOf(op.fun).Pointer()]
+	}
+	return markedDef(def, isDropsArgListDef)
 }
 
 // callListKeep bounds each free list.  A deep recursion returns one list per

@@ -132,24 +132,24 @@ func LoadPackage(env *lisp.LEnv) *lisp.LVal {
 }
 
 //elpsvet:allow package builtin table; formals are sealed by libutil at construction and shared via registrationFormals (lisp.LEnv.AddBuiltins)
-var builtins = []*libutil.Builtin{
-	libutil.FunctionDoc("regexp?", lisp.Formals("value"), BuiltinIsRegexp,
+var builtins = []lisp.LBuiltinDef{
+	lisp.DropsArgList(libutil.FunctionDoc("regexp?", lisp.Formals("value"), BuiltinIsRegexp,
 		`Returns true if value is a compiled regular expression (created
-		by regexp-compile). Returns false for all other types.`),
+		by regexp-compile). Returns false for all other types.`)),
 	libutil.FunctionDoc("regexp-compile", lisp.Formals("pattern"), BuiltinCompile,
 		`Compiles a regular expression pattern string and returns a native
 		regexp object. Uses Go's RE2 syntax. Returns an error with
 		condition 'invalid-regexp-pattern' if the pattern is invalid.`),
-	libutil.FunctionDoc("regexp-pattern", lisp.Formals("re"), BuiltinPattern,
+	lisp.DropsArgList(libutil.FunctionDoc("regexp-pattern", lisp.Formals("re"), BuiltinPattern,
 		`Returns the pattern string of a compiled regexp object. The
 		argument may be a compiled regexp or a string (which will be
-		compiled first).`),
-	libutil.FunctionDoc("regexp-match?", lisp.Formals("re", "text"), BuiltinIsMatch,
+		compiled first).`)),
+	lisp.DropsArgList(libutil.FunctionDoc("regexp-match?", lisp.Formals("re", "text"), BuiltinIsMatch,
 		`Returns true if the regexp matches text. re may be a compiled
 		regexp or a pattern string (compiled on each call). text may be
 		a string or bytes value. A match costs one step for each KiB of
 		text, times one plus the size of the compiled program in units
-		of 256 instructions.`),
+		of 256 instructions.`)),
 }
 
 func BuiltinIsRegexp(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {

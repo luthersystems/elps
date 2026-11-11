@@ -227,9 +227,10 @@ type funData struct {
 
 	// dropsList is true only for a kernel special operator or builtin that
 	// keeps neither its argument list nor a slice of the list's cells once
-	// it returns: the functions of callListDroppers (lisp/calllist.go).
-	// AddSpecialOps and AddBuiltins set it at registration, from
-	// dropsCallList.  reusesCallList reads it, and the evaluator reuses the
+	// it returns: the functions of callListDroppers (lisp/calllist.go) and
+	// the definitions marked with DropsArgList.  AddSpecialOps,
+	// AddBuiltins, BindBuiltins and RegisterBuiltins set it at
+	// registration, from dropsCallList.  reusesCallList reads it, and the evaluator reuses the
 	// list of a direct call of such a function.
 	dropsList bool
 }

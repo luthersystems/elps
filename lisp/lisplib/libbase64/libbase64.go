@@ -33,18 +33,18 @@ func LoadPackage(env *lisp.LEnv) *lisp.LVal {
 }
 
 //elpsvet:allow package builtin table; formals are sealed by libutil at construction and shared via registrationFormals (lisp.LEnv.AddBuiltins)
-var builtins = []*libutil.Builtin{
-	libutil.FunctionDoc("encode", lisp.Formals("data"), builtinEncode,
+var builtins = []lisp.LBuiltinDef{
+	lisp.DropsArgList(libutil.FunctionDoc("encode", lisp.Formals("data"), builtinEncode,
 		`Encodes data using standard base64 encoding and returns the
 		result as bytes. The argument may be a string or bytes value.
 		The encoded byte length, including padding, must fit the
-		allocation limit.`),
-	libutil.FunctionDoc("decode", lisp.Formals("base64-data"), builtinDecode,
+		allocation limit.`)),
+	lisp.DropsArgList(libutil.FunctionDoc("decode", lisp.Formals("base64-data"), builtinDecode,
 		`Decodes base64-encoded data and returns the result as bytes.
 		The argument may be a string or bytes value containing valid
 		standard base64. Returns an error if the input is not valid
 		base64. The decoded byte length must fit the allocation limit;
-		padding and ignored CR/LF characters do not count toward it.`),
+		padding and ignored CR/LF characters do not count toward it.`)),
 }
 
 func builtinEncode(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {

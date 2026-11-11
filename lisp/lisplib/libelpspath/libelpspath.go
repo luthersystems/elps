@@ -103,8 +103,8 @@ func LoadPackage(env *lisp.LEnv) *lisp.LVal {
 // AddMacros in lisp/env.go for why both exist.
 //
 //elpsvet:allow read-only formal templates; sealed by libutil at construction, and copied per environment by formalsCopier (lisp/env.go AddBuiltins)
-var builtins = []*libutil.Builtin{
-	libutil.FunctionDoc("?", lisp.Formals("val", lisp.VarArgSymbol, "steps"), BuiltinQueryGet,
+var builtins = []lisp.LBuiltinDef{
+	lisp.DropsArgList(libutil.FunctionDoc("?", lisp.Formals("val", lisp.VarArgSymbol, "steps"), BuiltinQueryGet,
 		`Get value at a path specified by positional args.
 
 		Each arg is a path step: string for map key, int for array index,
@@ -122,8 +122,8 @@ var builtins = []*libutil.Builtin{
 		(? scores '(range -2))    => the last two elements
 		(? obj)                   => obj itself (no path steps)
 
-		Accepts at most 1024 nested iterator steps; deeper traversal raises a depth error.`),
-	libutil.FunctionDoc("parse-path", lisp.Formals("selector"), BuiltinParsePath,
+		Accepts at most 1024 nested iterator steps; deeper traversal raises a depth error.`)),
+	lisp.DropsArgList(libutil.FunctionDoc("parse-path", lisp.Formals("selector"), BuiltinParsePath,
 		`Convert a jq-style path string into a list of positional path steps.
 
 		The steps are what the ? family takes, so the result applies
@@ -181,8 +181,8 @@ var builtins = []*libutil.Builtin{
 		since it parses AND builds a list. How much the caching is worth
 		depends on document size -- every operation first walks the whole
 		document to validate it, so on a large document the parse is
-		noise and on a small one it dominates.`),
-	libutil.FunctionDoc("?set!", lisp.Formals("val", lisp.VarArgSymbol, "steps-and-value"), BuiltinQuerySetMutate,
+		noise and on a small one it dominates.`)),
+	lisp.DropsArgList(libutil.FunctionDoc("?set!", lisp.Formals("val", lisp.VarArgSymbol, "steps-and-value"), BuiltinQuerySetMutate,
 		`Set value at a path specified by positional args, mutating the original.
 
 		The last argument is the new value; all preceding arguments are path
@@ -202,8 +202,8 @@ var builtins = []*libutil.Builtin{
 		A path that ends in '* stores the value in each element. The
 		sequence must be a vector.
 
-		Accepts at most 1024 nested iterator steps; deeper traversal raises a depth error.`),
-	libutil.FunctionDoc("?set", lisp.Formals("val", lisp.VarArgSymbol, "steps-and-value"), BuiltinQuerySet,
+		Accepts at most 1024 nested iterator steps; deeper traversal raises a depth error.`)),
+	lisp.DropsArgList(libutil.FunctionDoc("?set", lisp.Formals("val", lisp.VarArgSymbol, "steps-and-value"), BuiltinQuerySet,
 		`Set value at a path specified by positional args, returning a copy.
 
 		The last argument is the new value; all preceding arguments are path
@@ -226,8 +226,8 @@ var builtins = []*libutil.Builtin{
 		Iterative copying beyond 1000000 levels raises an ordinary depth error.
 
 		Accepts at most 1024 nested iterator steps; deeper traversal raises a depth error.
-		Copying path chains longer than 1024 steps also raise a depth error.`),
-	libutil.FunctionDoc("?del!", lisp.Formals("val", lisp.VarArgSymbol, "steps"), BuiltinQueryDeleteMutate,
+		Copying path chains longer than 1024 steps also raise a depth error.`)),
+	lisp.DropsArgList(libutil.FunctionDoc("?del!", lisp.Formals("val", lisp.VarArgSymbol, "steps"), BuiltinQueryDeleteMutate,
 		`Delete value at a path specified by positional args, mutating the original.
 
 		Out-of-range integer indexes are no-ops. List element mutation is refused.
@@ -240,8 +240,8 @@ var builtins = []*libutil.Builtin{
 		A path that ends in '* stores nil in each element and keeps the
 		length, as ?del does. The sequence must be a vector.
 
-		Accepts at most 1024 nested iterator steps; deeper traversal raises a depth error.`),
-	libutil.FunctionDoc("?del", lisp.Formals("val", lisp.VarArgSymbol, "steps"), BuiltinQueryDelete,
+		Accepts at most 1024 nested iterator steps; deeper traversal raises a depth error.`)),
+	lisp.DropsArgList(libutil.FunctionDoc("?del", lisp.Formals("val", lisp.VarArgSymbol, "steps"), BuiltinQueryDelete,
 		`Delete value at a path specified by positional args, returning a copy.
 
 		Out-of-range integer indexes return an unchanged copy. Containers are
@@ -256,8 +256,8 @@ var builtins = []*libutil.Builtin{
 		Iterative copying beyond 1000000 levels raises an ordinary depth error.
 
 		Accepts at most 1024 nested iterator steps; deeper traversal raises a depth error.
-		Copying path chains longer than 1024 steps also raise a depth error.`),
-	libutil.FunctionDoc("?nil!", lisp.Formals("val", lisp.VarArgSymbol, "steps"), BuiltinQueryNilMutate,
+		Copying path chains longer than 1024 steps also raise a depth error.`)),
+	lisp.DropsArgList(libutil.FunctionDoc("?nil!", lisp.Formals("val", lisp.VarArgSymbol, "steps"), BuiltinQueryNilMutate,
 		`Set value at a path to nil, mutating the original. The key is kept.
 
 		Out-of-range integer indexes are no-ops. List element mutation is refused.
@@ -269,8 +269,8 @@ var builtins = []*libutil.Builtin{
 		A path that ends in '* stores nil in each element. The sequence
 		must be a vector.
 
-		Accepts at most 1024 nested iterator steps; deeper traversal raises a depth error.`),
-	libutil.FunctionDoc("?nil", lisp.Formals("val", lisp.VarArgSymbol, "steps"), BuiltinQueryNil,
+		Accepts at most 1024 nested iterator steps; deeper traversal raises a depth error.`)),
+	lisp.DropsArgList(libutil.FunctionDoc("?nil", lisp.Formals("val", lisp.VarArgSymbol, "steps"), BuiltinQueryNil,
 		`Set value at a path to nil, returning a copy. The key is kept.
 
 		Out-of-range integer indexes return an unchanged copy. Containers are
@@ -285,7 +285,7 @@ var builtins = []*libutil.Builtin{
 		Iterative copying beyond 1000000 levels raises an ordinary depth error.
 
 		Accepts at most 1024 nested iterator steps; deeper traversal raises a depth error.
-		Copying path chains longer than 1024 steps also raise a depth error.`),
+		Copying path chains longer than 1024 steps also raise a depth error.`)),
 }
 
 // errCyclicValue reports a value that contains itself.  append! and assoc!

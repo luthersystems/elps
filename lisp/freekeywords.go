@@ -60,6 +60,8 @@ func (d freeKeywordsDef) Docstring() string {
 // freeKeywordsMarker is unexported so only FreeKeywords can opt a builtin in.
 func (freeKeywordsDef) freeKeywordsMarker() {}
 
+func (d freeKeywordsDef) wrappedDef() LBuiltinDef { return d.LBuiltinDef }
+
 type freeKeywordsBuiltin interface {
 	freeKeywordsMarker()
 }
@@ -68,7 +70,7 @@ type freeKeywordsBuiltin interface {
 // was wrapped with FreeKeywords -- or a message when def is wrapped but its
 // formals do not have the required shape.
 func freeKeysOf(def LBuiltinDef) (int32, string) {
-	if _, ok := def.(freeKeywordsBuiltin); !ok {
+	if !markedDef(def, isFreeKeywordsDef) {
 		return 0, ""
 	}
 	formals := def.Formals()
@@ -113,4 +115,9 @@ func freeKeywordLiteral(f, expr *LVal, i int) bool {
 	}
 	off := i - (int(fd.freeKeys) - 1)
 	return off >= 0 && off%2 == 0
+}
+
+func isFreeKeywordsDef(def LBuiltinDef) bool {
+	_, ok := def.(freeKeywordsBuiltin)
+	return ok
 }

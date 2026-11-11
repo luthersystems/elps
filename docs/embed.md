@@ -914,6 +914,37 @@ The rules are exact, so step counts stay deterministic:
   that is a coordinated upgrade like any other step change. A new builtin can
   adopt it freely.
 
+**Reuse of the argument list: `lisp.DropsArgList`.** The evaluator builds a
+list for each call form: a header and the cells of the evaluated arguments.
+A builtin may keep that list, so the evaluator allocates a new one for each
+call. Register a builtin that keeps neither the list nor a slice of its
+`Cells` as `lisp.DropsArgList(def)`, and the evaluator gives the list back to
+the VM when the call returns. The next call uses the same storage. This saves
+one allocation for each call and changes no result, step count or error text:
+
+```go
+env.AddBuiltins(true, lisp.DropsArgList(elpsutil.FunctionDoc("second",
+	lisp.Formals("a", "b"), builtinSecond, "...")))
+
+func builtinSecond(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+	return args.Cells[1] // a single cell may go anywhere
+}
+```
+
+- The builtin may read, evaluate, return or store single cells. It must not
+  return the list, store the list or a slice of its cells, capture either in
+  a closure, or pass either to code that may keep it. `lisp.ReadArgs` keeps
+  the list in the `ArgReader` it returns, so the typed bindings
+  (`lisp.Func1` to `lisp.Func3E`) cannot carry the mark.
+- elpsvet's `elpscalllist` rule checks each builtin that elps marks. Your
+  own mark is your promise. Run your tests under the `elpscheck` build tag:
+  that build fills each returned list with invalid values, so a builtin that
+  kept its list reads them.
+- The mark works through `AddBuiltins`, `BindBuiltins`, `RegisterBuiltins`
+  and `AddSpecialOps`. A macro's list is never reused.
+- `DropsArgList(def)` returns a wrapper, as `FreeKeywords` does, and the two
+  compose in either order.
+
 ### Go-style helpers for ports
 
 These helpers let a Go builtin read like ordinary Go. Each helper that

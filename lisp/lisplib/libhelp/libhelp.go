@@ -369,22 +369,22 @@ func LoadPackage(env *lisp.LEnv) *lisp.LVal {
 // package name, (help-package 'math), which reads the same either way.
 //
 //elpsvet:allow package builtin table; formals are sealed by libutil at construction and shared via registrationFormals (lisp.LEnv.AddBuiltins)
-var builtins = []*libutil.Builtin{
-	libutil.FunctionDoc("help-package", lisp.Formals("pkg-name"), builtinHelpPackage,
+var builtins = []lisp.LBuiltinDef{
+	lisp.DropsArgList(libutil.FunctionDoc("help-package", lisp.Formals("pkg-name"), builtinHelpPackage,
 		`
 		Prints documentation for exported symbols in the specified package.
 		pkg-name is a symbol, e.g. (help-package 'math).
-		`),
-	libutil.FunctionDoc("help-package-symbols", lisp.Formals("pkg-name", lisp.OptArgSymbol, "all"), builtinPackageSymbols,
+		`)),
+	lisp.DropsArgList(libutil.FunctionDoc("help-package-symbols", lisp.Formals("pkg-name", lisp.OptArgSymbol, "all"), builtinPackageSymbols,
 		`
 		Prints symbols defined in the specified package.  If a second argument
 		is given which evaluates as true then unexported symbols in the package
 		will also be printed.
-		`),
-	libutil.FunctionDoc("help-packages", lisp.Formals(), builtinHelpPackages,
+		`)),
+	lisp.DropsArgList(libutil.FunctionDoc("help-packages", lisp.Formals(), builtinHelpPackages,
 		`
 		Lists all packages loaded in the runtime with their descriptions.
-		`),
+		`)),
 }
 
 func builtinHelpPackages(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
