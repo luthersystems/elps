@@ -68,7 +68,7 @@ func TestForkDropsEvaluatorLocation(t *testing.T) {
 	// forker.env too, and it is the environment whose register a template
 	// holds a *definition-site* location in.  A top-level lambda captures
 	// the root environment itself and would leave the walk with one env.
-	initializer := FreshInt(1)
+	initializer := Int(1)
 	definition := lambdaExpr()
 	lam := SExpr([]*LVal{
 		Symbol("let"),

@@ -58,7 +58,7 @@ func literal(v *lisp.LVal) descValue {
 func (d descValue) lval() *lisp.LVal {
 	switch d.kind {
 	case lisp.LInt:
-		return lisp.Int(d.i)
+		return lisp.SharedInt(d.i)
 	case lisp.LFloat:
 		return lisp.Float(d.f)
 	case lisp.LSymbol:
@@ -188,7 +188,7 @@ func mapKeyLVal(k lisp.MapKey) *lisp.LVal {
 	case lisp.LSymbol:
 		return lisp.Symbol(k.Str)
 	case lisp.LInt:
-		return lisp.Int(k.Int)
+		return lisp.SharedInt(k.Int)
 	default:
 		return lisp.String(k.Str)
 	}

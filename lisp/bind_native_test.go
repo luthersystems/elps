@@ -282,7 +282,7 @@ func TestPositionalListIsSharedByBothPaths(t *testing.T) {
 		for narg := range len(formals.Cells) + 3 {
 			cells := make([]*LVal, narg)
 			for i := range cells {
-				cells[i] = FreshInt(i)
+				cells[i] = Int(i)
 			}
 			direct := bindNativePositional(formals.Cells, cells)
 			_, bound := env.bind(fun, QExpr(cells))

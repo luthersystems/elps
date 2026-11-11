@@ -108,7 +108,7 @@ func (w *untagWalker) value(v *lisp.LVal, depth int) (*lisp.LVal, error) {
 		if err := w.add(decimalLen(v.Int)); err != nil {
 			return nil, err
 		}
-		return lisp.Int(v.Int), nil
+		return lisp.SharedInt(v.Int), nil
 	case lisp.LFloat:
 		if math.IsNaN(v.Float) || math.IsInf(v.Float, 0) || math.Trunc(v.Float) == v.Float {
 			return nil, errors.New("typed json: whole float requires ~d")

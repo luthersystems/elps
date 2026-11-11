@@ -849,7 +849,7 @@ func opDoTimes(env *LEnv, args *LVal) *LVal {
 			return lerr
 		}
 		n++
-		lerr := loopenv.Put(symbol, Int(i))
+		lerr := loopenv.Put(symbol, SharedInt(i))
 		if lerr.IsError() {
 			return lerr
 		}
@@ -860,7 +860,7 @@ func opDoTimes(env *LEnv, args *LVal) *LVal {
 			}
 		}
 	}
-	lerr := loopenv.Put(symbol, Int(n))
+	lerr := loopenv.Put(symbol, SharedInt(n))
 	if lerr.IsError() {
 		return lerr
 	}

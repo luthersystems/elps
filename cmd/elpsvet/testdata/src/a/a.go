@@ -52,13 +52,14 @@ func freshComposite() *lisp.LVal {
 	return w
 }
 
-// sharedInt writes to the result of lisp.Int, which for a small number is
-// an entry of a table every Runtime shares: flagged, like a write to Nil()
-// or Bool().  lisp.FreshInt is the constructor of an integer the caller owns.
+// sharedInt writes to the result of lisp.SharedInt, which for a small
+// number is an entry of a table every Runtime shares: flagged, like a write
+// to Nil() or Bool().  lisp.Int is the constructor of an integer the caller
+// owns.
 func sharedInt() *lisp.LVal {
-	v := lisp.Int(1)
+	v := lisp.SharedInt(1)
 	v.Int++ // want `write to LVal field \.Int on a lisp\.LVal this function did not construct`
-	w := lisp.FreshInt(1)
+	w := lisp.Int(1)
 	w.Int++
 	return w
 }

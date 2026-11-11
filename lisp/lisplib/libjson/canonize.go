@@ -247,7 +247,7 @@ func (w *canonWalker) value(v *lisp.LVal, depth int, path string) (*lisp.LVal, e
 		if err := w.add(decimalLen(v.Int), path); err != nil {
 			return nil, err
 		}
-		return lisp.Int(v.Int), nil
+		return lisp.SharedInt(v.Int), nil
 	case lisp.LFloat:
 		x := v.Float
 		if math.IsNaN(x) || math.IsInf(x, 0) {
@@ -266,7 +266,7 @@ func (w *canonWalker) value(v *lisp.LVal, depth int, path string) (*lisp.LVal, e
 			if err := w.add(decimalLen(int(x)), path); err != nil {
 				return nil, err
 			}
-			return lisp.Int(int(x)), nil
+			return lisp.SharedInt(int(x)), nil
 		}
 		var scratch [64]byte
 		if err := w.add(len(appendJSONFloat(scratch[:0], x)), path); err != nil {
@@ -435,7 +435,7 @@ func (w *canonWalker) sortedMap(v *lisp.LVal, depth int, path string) (*lisp.LVa
 		kp := ""
 		switch p.Kind {
 		case lisp.LInt:
-			return nil, w.fail(w.renderPath(start)+"[key "+strconv.Itoa(p.Int)+"]", "key-type", "int map key", lisp.Int(p.Int))
+			return nil, w.fail(w.renderPath(start)+"[key "+strconv.Itoa(p.Int)+"]", "key-type", "int map key", lisp.SharedInt(p.Int))
 		case lisp.LString, lisp.LSymbol:
 		default:
 			return nil, w.fail(kp, "key-type", "unsupported map key", lisp.Symbol(p.Kind.String()+" "+p.Key))

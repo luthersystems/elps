@@ -127,7 +127,7 @@ func (md *MapData) Keys() *LVal {
 // Entries writes the entries into buf, none for a map with no backing.
 func (md *MapData) Entries(buf []*LVal) *LVal {
 	if md == nil || md.mapBacking == nil {
-		return Int(0)
+		return SharedInt(0)
 	}
 	return md.mapBacking.Entries(buf)
 }
@@ -424,7 +424,7 @@ func (m sortedmap) Entries(buf []*LVal) *LVal {
 	}
 	n := len(m.m)
 	if n == 0 {
-		return Int(0)
+		return SharedInt(0)
 	}
 	if len(buf) < n {
 		return Errorf("buffer has insufficient length")
@@ -458,7 +458,7 @@ func (m sortedmap) Entries(buf []*LVal) *LVal {
 		i++
 	}
 	slices.SortFunc(buf[:n], comparePairKeyStr)
-	return Int(n)
+	return SharedInt(n)
 }
 
 // Keys builds the sorted key list directly rather than through Entries, so
@@ -531,7 +531,7 @@ func (m sortedmap) entriesWithInts(buf []*LVal) *LVal {
 	}
 	slices.SortFunc(buf[:ni], func(a, b *LVal) int { return cmp.Compare(a.Cells[0].Int, b.Cells[0].Int) })
 	slices.SortFunc(buf[ni:n], comparePairKeyStr)
-	return Int(n)
+	return SharedInt(n)
 }
 
 // keysWithInts is Keys for a map holding at least one int key, in the order
@@ -814,5 +814,5 @@ func (md *MapData) getInt(k int) (*LVal, bool) {
 		v, ok := m.ints()[k]
 		return v, ok
 	}
-	return md.mapBacking.Get(Int(k))
+	return md.mapBacking.Get(SharedInt(k))
 }

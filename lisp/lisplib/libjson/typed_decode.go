@@ -303,7 +303,7 @@ func (d *typedDecoder) stringValue(s []byte) (*lisp.LVal, error) {
 		if exactInt(int64(n)) {
 			return nil, d.errorf("non-canonical int")
 		}
-		return lisp.Int(n), nil
+		return lisp.SharedInt(n), nil
 	case 'd':
 		f, err := strconv.ParseFloat(string(body), 64)
 		if err != nil || math.IsInf(f, 0) || math.IsNaN(f) || math.Trunc(f) != f ||
@@ -411,7 +411,7 @@ func (d *typedDecoder) number() (*lisp.LVal, error) {
 	text := d.b[start:d.i]
 	if !isFloat {
 		if n, ok := smallCanonicalInt(text); ok {
-			return lisp.Int(n), nil
+			return lisp.SharedInt(n), nil
 		}
 		n, err := d.canonicalInt(text)
 		if err != nil {
@@ -420,7 +420,7 @@ func (d *typedDecoder) number() (*lisp.LVal, error) {
 		if !exactInt(int64(n)) {
 			return nil, d.errorf("non-canonical number")
 		}
-		return lisp.Int(n), nil
+		return lisp.SharedInt(n), nil
 	}
 	f, err := strconv.ParseFloat(string(text), 64)
 	if err != nil || math.IsInf(f, 0) {
@@ -674,7 +674,7 @@ func (d *typedDecoder) key(s []byte) (*lisp.LVal, error) {
 		if err != nil {
 			return nil, err
 		}
-		return lisp.Int(n), nil
+		return lisp.SharedInt(n), nil
 	}
 	return nil, d.errorf("invalid tagged key")
 }

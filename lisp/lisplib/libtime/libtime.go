@@ -329,7 +329,7 @@ func BuiltinDurationNS(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	if int64(int(d)) != int64(d) {
 		return env.Errorf("duration is too large")
 	}
-	return lisp.Int(int(d))
+	return lisp.SharedInt(int(d))
 }
 
 // BuiltinSleep sleeps for the given duration before returning.

@@ -18,7 +18,7 @@ func callListProbe(t *testing.T, env *LEnv, name string, operator bool) (*int, *
 	length, capacity := new(int), new(int)
 	def := &langBuiltin{name: name, formals: Formals("a", "b"), fun: func(_ *LEnv, args *LVal) *LVal {
 		*length, *capacity = len(args.Cells), cap(args.Cells)
-		return QExpr(append(args.Cells, FreshInt(3)))
+		return QExpr(append(args.Cells, Int(3)))
 	}}
 	if operator {
 		env.AddSpecialOps(true, def)
@@ -40,7 +40,7 @@ func callListProbe(t *testing.T, env *LEnv, name string, operator bool) (*int, *
 func requireCallListIsClipped(t *testing.T, env *LEnv, name string, length, capacity *int) {
 	t.Helper()
 	call := func(a, b int) *LVal {
-		return env.Eval(SExpr([]*LVal{Symbol(name), FreshInt(a), FreshInt(b)}))
+		return env.Eval(SExpr([]*LVal{Symbol(name), Int(a), Int(b)}))
 	}
 	for range 2 {
 		first := call(1, 2)
@@ -80,7 +80,7 @@ func TestCallListGetReturnsTheBackingArray(t *testing.T) {
 			require.Equal(t, LSExpr, v.Type)
 			require.Empty(t, back)
 			require.Equal(t, want, cap(back), "n=%d", n)
-			v.Cells = append(back[:0:n], FreshInt(1))
+			v.Cells = append(back[:0:n], Int(1))
 			p.put(v, back)
 		}
 	}

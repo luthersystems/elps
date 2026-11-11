@@ -161,7 +161,7 @@ func BuiltinInt(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	if int64(x) != x64 {
 		return env.Errorf("integer overflow")
 	}
-	return lisp.Int(x)
+	return lisp.SharedInt(x)
 }
 
 // BuiltinStructField reflects the first argument and returns the named struct

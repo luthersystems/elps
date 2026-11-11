@@ -213,7 +213,7 @@ func lispMethodSig(env *lisp.LEnv, who methodWho, fn, types *lisp.LVal) *lisp.LV
 	}
 	slots, npos := formalSlots(lisp.SExpr(formals.Cells[1:]))
 	sig := make([]*lisp.LVal, sigArgs, sigArgs+len(types.Cells)/2)
-	sig[sigNpos], sig[sigReturns] = lisp.Int(npos), lisp.Nil()
+	sig[sigNpos], sig[sigReturns] = lisp.SharedInt(npos), lisp.Nil()
 	for i := 0; i < len(types.Cells); i += 2 {
 		name, typ := types.Cells[i], types.Cells[i+1]
 		late := name.Type == lisp.LSExpr && len(name.Cells) == 1
@@ -242,7 +242,7 @@ func lispMethodSig(env *lisp.LEnv, who methodWho, fn, types *lisp.LVal) *lisp.LV
 				return argError(env, who, c.name, typ)
 			}
 		}
-		sig = append(sig, lisp.Cells{lisp.String(c.name), lisp.Int(int(c.kind)), lisp.Int(c.pos), typ, lisp.Bool(late)}.List())
+		sig = append(sig, lisp.Cells{lisp.String(c.name), lisp.SharedInt(int(c.kind)), lisp.SharedInt(c.pos), typ, lisp.Bool(late)}.List())
 	}
 	return lisp.QExpr(sig)
 }

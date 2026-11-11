@@ -16,7 +16,7 @@ func TestTemplateCompilerSizesPrivateDescriptors(t *testing.T) {
 			env := NewEnv(NewEnv(templateOwnershipEnv()))
 			symbols := env.Runtime.Package.symbols
 			for n := range count {
-				v := FreshInt(n)
+				v := Int(n)
 				symbols[fmt.Sprintf("value-%d", n)] = v
 				symbols[fmt.Sprintf("alias-%d", n)] = v
 			}

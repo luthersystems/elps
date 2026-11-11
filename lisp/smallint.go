@@ -8,8 +8,10 @@ import "fmt"
 //
 // About one allocation in ten was an integer, and about nine in ten of those
 // held a value in [-16, 1024): loop counters, indices, lengths, small sums
-// (luthersystems/elps#944).  Int returns those from a table built once, the
-// way Nil and Bool return their singletons, so they cost no allocation.
+// (luthersystems/elps#944).  SharedInt returns those from a table built
+// once, the way Nil and Bool return their singletons, so they cost no
+// allocation.  Int still allocates, as Float does: a caller that did not ask
+// for a shared value never gets one.
 //
 // A table integer is shared by every Runtime in the process, so it is
 // IMMUTABLE, like the three singletons (lisp/singleton.go):
@@ -17,11 +19,11 @@ import "fmt"
 //   - It is constructed sealed.  SetSource and sealAST are no-ops on a
 //     sealed value, so the two writes a parser or a loader would make do
 //     not land.  Code that needs an integer of its own, to give it a
-//     source location or to write its Int field, calls FreshInt.
-//   - cmd/elpsvet's freshness rule does not treat Int as a constructor of
+//     source location or to write its Int field, calls Int.
+//   - cmd/elpsvet's freshness rule does not treat SharedInt as a constructor of
 //     a value the caller owns, so a field write on its result is reported
 //     in this module and in any module that runs elpsvet.
-//   - In elpscheck builds Int verifies the entry it hands out, and
+//   - In elpscheck builds SharedInt verifies the entry it hands out, and
 //     SingletonSnapshot.Verify checks the whole table.
 //
 // The table holds pointers to separate small allocations, not one array of
@@ -29,7 +31,7 @@ import "fmt"
 // collector's write barrier finds the object for each pointer into a large
 // object on a slower path than for a pointer into a span of small objects:
 // a list of table integers copied while the collector ran took about 12%
-// longer to write (BenchmarkDeleteCompaction, n=64).  Int is an index and
+// longer to write (BenchmarkDeleteCompaction, n=64).  SharedInt is an index and
 // one load.
 //
 // WHAT SHARING DOES NOT CHANGE.  A sealed integer was already an ordinary
@@ -80,17 +82,16 @@ func smallIntDrift(v *LVal, i int) bool {
 func verifySmallInts(t *[smallIntMax - smallIntMin]*LVal) string {
 	for i := range t {
 		if smallIntDrift(t[i], i) {
-			return fmt.Sprintf("Int(%d)", i+smallIntMin)
+			return fmt.Sprintf("SharedInt(%d)", i+smallIntMin)
 		}
 	}
 	return ""
 }
 
-// FreshInt returns a new LVal representing the number x.  Unlike Int it
-// always allocates, and the caller owns the result: use it for an integer
-// that will get a source location (a reader's literal) or whose fields will
-// be written.
-func FreshInt(x int) *LVal {
+// Int returns a new LVal representing the number x.  It always allocates,
+// as Float does, and the caller owns the result.  SharedInt is the
+// variant that does not allocate for a small x.
+func Int(x int) *LVal {
 	return &LVal{
 		Type: LInt,
 		Int:  x,

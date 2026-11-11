@@ -1924,7 +1924,7 @@ func (s *state) loopsArrayIndex(body ast.Node, x string) bool {
 				return !found
 			}
 			if arg, ok := ast.Unparen(call.Args[0]).(*ast.CallExpr); ok {
-				if fn := s.lispFunc(arg); fn != nil && fn.Name() == "Int" {
+				if fn := s.lispFunc(arg); fn != nil && (fn.Name() == "Int" || fn.Name() == "SharedInt") {
 					found = true
 				}
 			}

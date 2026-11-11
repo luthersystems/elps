@@ -525,19 +525,19 @@ func locateContainer(v *LVal, callSite *token.Location, boundary map[*LVal]struc
 // list the in-place locate has just located, a located integer of the
 // list's own.
 //
-// A Go macro writes a number into its expansion with Int, and for a small
+// A Go macro writes a number into its expansion with SharedInt, and for a small
 // number that is an entry of the shared table (lisp/smallint.go), which
 // cannot be located in place.  Left alone, the stamp would copy it, and
 // with it every list from there up to the root of the expansion: the cost
 // the in-place locate exists to avoid.  Replacing the cell costs the one
-// allocation Int itself made before the table existed.
+// allocation SharedInt saved.
 //
 // It runs only for a list this walk located, which is the macro's own
 // fresh node, never an argument and never a parsed list.
 func locateSharedInts(cells []*LVal, callSite *token.Location) {
 	for i, c := range cells {
 		if isSmallInt(c) {
-			n := FreshInt(c.Int)
+			n := Int(c.Int)
 			n.setLoc(callSite)
 			cells[i] = n //elps:mutates the cells of fresh Go macro syntax, located before publication
 		}
@@ -643,7 +643,7 @@ func (s *macroStamper) stampedCopy(v *LVal) *LVal {
 	cp.hasAux, cp.auxNoLoc = false, false
 	if isSmallInt(v) {
 		// The copy is an integer of the expansion's own, as it was
-		// when Int allocated: it does not inherit the table's seal.
+		// when it was a fresh Int: it does not inherit the table's seal.
 		cp.sealed = false
 	}
 	cp.source = s.callSite //elps:aliases by design: callSite is the expansion-owned copy macroCall took (env.loc.Copy(), issue #431), shared by every node of one expansion

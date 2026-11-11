@@ -337,9 +337,9 @@ func (n *templateNode) hasQuotedHead() bool {
 func (n *templateNode) source() *lisp.LVal {
 	switch n.kind {
 	case templateArg:
-		return lisp.Cells{lisp.Symbol("unquote"), lisp.FreshInt(n.index)}.SExpr()
+		return lisp.Cells{lisp.Symbol("unquote"), lisp.Int(n.index)}.SExpr()
 	case templateSplice:
-		return lisp.Cells{lisp.Symbol("unquote-splicing"), lisp.FreshInt(n.index)}.SExpr()
+		return lisp.Cells{lisp.Symbol("unquote-splicing"), lisp.Int(n.index)}.SExpr()
 	case templateQuote:
 		return lisp.Quote(n.children[0].source())
 	case templateList:
@@ -363,7 +363,7 @@ func (n *templateNode) expand(args []*lisp.LVal) *lisp.LVal {
 	case templateString:
 		return lisp.String(n.str)
 	case templateInt:
-		return lisp.FreshInt(n.num)
+		return lisp.Int(n.num)
 	case templateFloat:
 		return lisp.Float(n.float)
 	case templateArg:

@@ -13,7 +13,7 @@ import (
 func TestTemplateDescriptorsPreserveOrderWithOneAllocation(t *testing.T) {
 	values := make(map[string]*LVal)
 	metadata := make(map[string]string)
-	leaves := []*LVal{FreshInt(17), FreshInt(29)}
+	leaves := []*LVal{Int(17), Int(29)}
 	for n := range 32 {
 		key := fmt.Sprintf("key-%02d", n)
 		values[key] = leaves[n%len(leaves)]

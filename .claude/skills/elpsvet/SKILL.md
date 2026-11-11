@@ -96,9 +96,9 @@ order of preference. Fix the code before reaching for a marker:
 - **ownership** — construct the value per load. A shared builtin table whose
   formals are sealed by `libutil`/`elpsutil` is the accepted exception; copy the
   existing annotation, e.g. `lisp/lisplib/libbase64/libbase64.go`.
-- **freshness** — construct locally or `Copy`/detach first. `lisp.Int` does
-  not construct: it returns a shared value for a small number. Use
-  `lisp.FreshInt` for an integer the function writes.
+- **freshness** — construct locally or `Copy`/detach first. `lisp.SharedInt`
+  does not construct: it returns a shared value for a small number. Use
+  `lisp.Int` for an integer the function writes.
 - **escape** — store `copyLocation(...)` instead of the pointer.
 - **native payload** — see the tiers below. The diagnostic variant tells you
   which case you hit: "not a known-safe value type" (ordinary report), "not

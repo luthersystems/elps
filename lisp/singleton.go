@@ -137,7 +137,7 @@ func (s SingletonSnapshot) Verify() string {
 // verifySingletons is Verify without the integer table.  checkSingleton
 // runs on every Nil and Bool call of an elpscheck build, where a walk of
 // the whole table would dominate the run; the table has its own per-entry
-// check in Int (checkSmallInt).
+// check in SharedInt (checkSmallInt).
 func (s SingletonSnapshot) verifySingletons() string {
 	if !singletonLValEqual(&s.nilV, singletonNil) {
 		return "Nil()"

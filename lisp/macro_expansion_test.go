@@ -47,8 +47,8 @@ func TestStampMacroExpansion_WithContext(t *testing.T) {
 
 	inner := Symbol("+")
 	inner.source = nil
-	arg1 := FreshInt(1)
-	arg2 := FreshInt(2)
+	arg1 := Int(1)
+	arg2 := Int(2)
 	expr := SExpr([]*LVal{inner, arg1, arg2})
 	expr.source = nil
 

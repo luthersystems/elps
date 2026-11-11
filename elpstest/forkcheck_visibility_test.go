@@ -39,12 +39,12 @@ func visibilityEnv(t *testing.T, values ...*lisp.LVal) *lisp.LEnv {
 }
 
 func TestForkOracleSeesMutableScalarHeaders(t *testing.T) {
-	shared := lisp.FreshInt(42)
+	shared := lisp.Int(42)
 	first, second := visibilityEnv(t, shared), visibilityEnv(t, shared)
 	if len(sharedOracleCensuses(newOracleCensus(first), newOracleCensus(second), nil)) == 0 {
 		t.Fatal("two VMs share a writable scalar header but the oracle reports isolation")
 	}
-	if got := sharedOracleCensuses(newOracleCensus(first), newOracleCensus(visibilityEnv(t, lisp.FreshInt(42))), nil); len(got) != 0 {
+	if got := sharedOracleCensuses(newOracleCensus(first), newOracleCensus(visibilityEnv(t, lisp.Int(42))), nil); len(got) != 0 {
 		t.Fatalf("independent scalar headers reported shared: %v", got)
 	}
 }
@@ -52,7 +52,7 @@ func TestForkOracleSeesMutableScalarHeaders(t *testing.T) {
 func TestForkOracleSeesActualCellSlots(t *testing.T) {
 	for _, empty := range []bool{false, true} {
 		t.Run(map[bool]string{false: "overlap", true: "empty-capacity"}[empty], func(t *testing.T) {
-			cells := []*lisp.LVal{lisp.FreshInt(11), lisp.FreshInt(22), lisp.FreshInt(33)}
+			cells := []*lisp.LVal{lisp.Int(11), lisp.Int(22), lisp.Int(33)}
 			view := cells[1:]
 			if empty {
 				view = view[:0]
@@ -94,7 +94,7 @@ func TestForkOracleSeesByteOverlapAndCapacity(t *testing.T) {
 }
 
 func TestForkOraclePreservesQuoteState(t *testing.T) {
-	cells := []*lisp.LVal{lisp.FreshInt(7)}
+	cells := []*lisp.LVal{lisp.Int(7)}
 	if renderResult(lisp.QExpr(cells)) == renderResult(lisp.SExpr(cells)) {
 		t.Fatal("quoted data and executable expression render identically")
 	}
@@ -164,7 +164,7 @@ func TestForkOracleDoesNotInventFunctionIdentity(t *testing.T) {
 
 func TestForkOracleSealedContentIgnoresInterning(t *testing.T) {
 	makeLiteral := func(n int) *lisp.LVal {
-		value := lisp.QExpr([]*lisp.LVal{lisp.FreshInt(n)})
+		value := lisp.QExpr([]*lisp.LVal{lisp.Int(n)})
 		value.SealAST()
 		return value
 	}
@@ -192,7 +192,7 @@ func TestForkOracleSeesNilVersusEmptyStorage(t *testing.T) {
 }
 
 func TestForkOracleSealedDiamondsAreMemoized(t *testing.T) {
-	leaf := lisp.FreshInt(7)
+	leaf := lisp.Int(7)
 	value := leaf
 	for range 40 {
 		value = lisp.QExpr([]*lisp.LVal{value, value})
@@ -217,7 +217,7 @@ func TestForkOracleSealedDiamondsAreMemoized(t *testing.T) {
 }
 
 func TestForkOracleReadonlyFunctionCellsBoundary(t *testing.T) {
-	cells := []*lisp.LVal{lisp.FreshInt(1), lisp.FreshInt(2)}
+	cells := []*lisp.LVal{lisp.Int(1), lisp.Int(2)}
 	for _, value := range cells {
 		value.SealAST()
 	}
@@ -253,7 +253,7 @@ func TestForkOracleSeesMapBackingBehindDistinctWrappers(t *testing.T) {
 	if aliasSignature(aliased) == aliasSignature(independent) {
 		t.Fatal("distinct wrappers concealed shared map backing from alias parity")
 	}
-	if rc := one.MapSetString("witness", lisp.FreshInt(17)); rc.Type == lisp.LError {
+	if rc := one.MapSetString("witness", lisp.Int(17)); rc.Type == lisp.LError {
 		t.Fatal(rc)
 	}
 	if got := mapGet(two, "witness"); got.Type != lisp.LInt || got.Int != 17 {

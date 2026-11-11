@@ -589,13 +589,13 @@ func Bool(b bool) *LVal {
 	return singletonFalse
 }
 
-// Int returns an LVal representing the number x.
-//
-// For a small x the returned value is shared by every caller and every
-// Runtime (see lisp/smallint.go) — callers MUST NOT mutate it, and
-// SetSource on it is a no-op, as on Nil and Bool.  Use FreshInt for an
-// integer the caller will write to or give a source location.
-func Int(x int) *LVal {
+// SharedInt returns an LVal representing the number x, like Int, but for a
+// small x (-16 to 1023) it returns an entry of a table every Runtime shares
+// (see lisp/smallint.go) and allocates nothing.  The caller MUST NOT write
+// to the result, and SetSource on it is a no-op, as on Nil and Bool.  Use
+// it where an integer is made often and only read, as the kernel builtins
+// do.  When in doubt, call Int.
+func SharedInt(x int) *LVal {
 	if i := x - smallIntMin; uint(i) < uint(len(smallInts)) {
 		checkSmallInt(i)
 		return smallInts[i]
@@ -793,7 +793,7 @@ func MakeVector(n int) *LVal {
 // nil, so an embedder following it built a value that panicked the host the
 // first time lisp touched it:
 //
-//	env.PutGlobal(Symbol("a"), Array(QExpr([]*LVal{Int(3)}), nil))
+//	env.PutGlobal(Symbol("a"), Array(QExpr([]*LVal{SharedInt(3)}), nil))
 //	(aref a 0)    ; internal-panic: nil pointer dereference
 //
 // A panic is the wrong answer twice over: the read is not an error at all
@@ -819,7 +819,7 @@ func Array(dims *LVal, cells []*LVal) *LVal {
 		// A self-built dims list is exactly [len(cells)], so its product
 		// needs no loop and cannot overflow.
 		totalSize = len(cells)
-		stored = Cells{FreshInt(len(cells))}.List()
+		stored = Cells{Int(len(cells))}.List()
 	} else if dims.Type != LSExpr {
 		return Errorf("array dimensions are not a list: %v", dims.Type)
 	} else {
@@ -1493,8 +1493,8 @@ func (v *LVal) Map() *MapData {
 
 // MapKeys returns a list of keys in the map.  MapKeys panics if v.Type is not
 // LSortMap.  The type of each map key is retained from the first type a value
-// was set for that key.  For example, if the MapSet(Symbol("a"), Int(1)) is
-// called before MapSet(String("a"), Int(2)) then MapKey() will contain the
+// was set for that key.  For example, if the MapSet(Symbol("a"), SharedInt(1)) is
+// called before MapSet(String("a"), SharedInt(2)) then MapKey() will contain the
 // symbol and not the string.
 func (v *LVal) MapKeys() *LVal {
 	return v.Map().Keys()
@@ -1590,13 +1590,13 @@ func (v *LVal) setArrayDims(n int, dims []int) {
 			return
 		}
 		//elps:mutates the caller's array takes a new dimension list for the new rank
-		v.Cells[0] = Cells{FreshInt(n)}.List()
+		v.Cells[0] = Cells{Int(n)}.List()
 		return
 	}
 	if len(d.Cells) != len(dims) {
 		cells := make([]*LVal, len(dims))
 		for i, k := range dims {
-			cells[i] = FreshInt(k)
+			cells[i] = Int(k)
 		}
 		//elps:mutates the caller's array takes a new dimension list for the new rank
 		v.Cells[0] = QExpr(cells)
@@ -1618,7 +1618,7 @@ func (v *LVal) setArrayDims(n int, dims []int) {
 func setArrayDim(d *LVal, i, n int) {
 	if isSmallInt(d.Cells[i]) {
 		//elps:mutates an array owns its dimension list; the shared integer in it is replaced, not written
-		d.Cells[i] = FreshInt(n)
+		d.Cells[i] = Int(n)
 		return
 	}
 	//elps:mutates an array owns its dimension list, which append! writes in place too
@@ -2436,7 +2436,7 @@ func makeByteSeq(v *LVal) *LVal {
 		b := v.Bytes()
 		cells := make([]*LVal, len(b))
 		for i := range b {
-			cells[i] = Int(int(b[i]))
+			cells[i] = SharedInt(int(b[i]))
 		}
 		return QExpr(cells)
 	default:

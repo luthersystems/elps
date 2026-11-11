@@ -231,7 +231,7 @@ func TestEveryValueTypeNeverPanics(t *testing.T) {
 			v.Cells = nil
 			return v
 		},
-		"typemax": func() *lisp.LVal { v := lisp.FreshInt(1); v.Type = lisp.LTypeMax; return v },
+		"typemax": func() *lisp.LVal { v := lisp.Int(1); v.Type = lisp.LTypeMax; return v },
 	}
 
 	builtins := []struct {
