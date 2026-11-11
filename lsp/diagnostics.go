@@ -80,21 +80,29 @@ func (s *Server) textDocumentDidSave(ctx *glsp.Context, params *protocol.DidSave
 
 	// Update the definition index synchronously before analysis so that
 	// the current save's diagnostics reflect the latest ExtraGlobals.
-	recordsChanged, tablesChanged := s.updateFileIndex(params.TextDocument.URI)
+	up := s.updateFileIndex(params.TextDocument.URI)
 
 	doc := s.docs.Get(params.TextDocument.URI)
 	if doc != nil {
+		if up.macros {
+			// The analysis of the buffer was made with the macros before
+			// the save, and its text did not change since: drop it.
+			doc.mu.Lock()
+			doc.analysis = nil
+			doc.mu.Unlock()
+		}
 		s.analyzeAndPublish(doc)
 	}
 	// The other open documents read the tables too: a definition, an
 	// export or an import that the save added or removed changes their
 	// diagnostics. A save that changed only the record methods (a config
 	// with no workspace scan reports no more) concerns the documents that
-	// make a record.
+	// make a record. A macro that the save loaded again changes the
+	// expansion of its calls in every file.
 	switch {
-	case tablesChanged:
+	case up.tables, up.macros:
 		s.debouncedReanalyze(savedReanalyzeKey, recordReanalyzeDelay)
-	case recordsChanged:
+	case up.records:
 		s.reanalyzeRecordDocumentsLater(params.TextDocument.URI)
 	}
 

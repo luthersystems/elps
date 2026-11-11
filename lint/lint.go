@@ -475,6 +475,9 @@ func BuildAnalysisConfig(cfg *LintConfig) (*analysis.Config, error) {
 	// otherwise, if Env is provided, load workspace macros and create one.
 	expander := cfg.MacroExpander
 	if expander == nil && cfg.Env != nil {
+		// Unbounded, unlike the editor loads (LoadWorkspaceMacrosContext):
+		// elps lint is a one-shot process that evaluates the preamble as
+		// the program would, and the user can stop it.
 		if errs := analysis.LoadWorkspaceMacros(cfg.Env, prescan.Preamble); len(errs) > 0 {
 			for _, err := range errs {
 				slog.Warn("failed to load workspace macro", "error", err)

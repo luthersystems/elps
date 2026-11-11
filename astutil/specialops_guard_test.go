@@ -31,6 +31,8 @@ var specialOpAllowlist = map[string]string{
 	"analysis/codewalk.go:sourceResolver.form":                  "tracks package changes through top-level progns while CodeWalker owns lexical syntax",
 	"analysis/codewalk.go:sourceResolver.visit":                 "maps walker scope and binding events to resolver scopes",
 	"analysis/expander.go:evalPreambleFormUnchecked":            "selects definitions safe to evaluate when loading a macro preamble",
+	"analysis/expander_reload.go:preambleMacros":                "reads the package and macro name of top-level preamble forms",
+	"analysis/expander_reload.go:scannedFile.definesMacroNamed": "finds a top-level defmacro of one name in a file preamble",
 	"analysis/generated.go:analyzer.expandPackageForms":         "excludes file-defined non-macros and advances package context while expanding selected package forms",
 	"analysis/generated.go:expansionPackageForms":               "flattens transparent top-level progns for package-aware expansion, delegating nested declarations to PackageForms",
 	"analysis/generated.go:isPackageFormHead":                   "keeps declarations and package control calls out of prescan macro expansion",

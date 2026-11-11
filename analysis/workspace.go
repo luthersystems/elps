@@ -1200,6 +1200,9 @@ type scannedFile struct {
 	filePkg        string // "" for bare files
 	firstInPkgLine int    // 1-based line of first in-package, 0 if none
 	recordMethods  RecordMethods
+	// lastInPackage is the package of the last in-package of a literal
+	// name in preamble, or "" (see WorkspaceScan.packageAfter).
+	lastInPackage string
 }
 
 // scanWorkspaceFile scans one file for a WorkspaceScan.
@@ -1216,6 +1219,7 @@ func scanWorkspaceFile(source []byte, path string) scannedFile {
 		filePkg:        scanned.filePkg,
 		firstInPkgLine: scanned.firstInPkgLine,
 		recordMethods:  scanned.recordMethods,
+		lastInPackage:  finalPackage(scanned.preamble, ""),
 	}
 }
 
@@ -1246,12 +1250,26 @@ type WorkspaceScan struct {
 	// the first lookup that needs it: it costs file system calls for
 	// each file.
 	norm *normalizedPaths
+	// abs holds filepath.Abs of each path ("" when it failed).
+	abs []string
+	// pkgs memoizes loadPackages. A reload asks for the packages of the
+	// scan before a save and of the scan after it; the first is the scan
+	// after the save before, so its packages are known.
+	pkgs *loadPackagesMemo
 
 	// The load tree of main.lisp. See buildLoadTree.
 	mainPath   string
 	loadTree   map[string]string
 	loadOrder  []string
 	defaultPkg string
+}
+
+// loadPackagesMemo holds the result of loadPackages for one start
+// package.
+type loadPackagesMemo struct {
+	mu    sync.Mutex
+	start string
+	pkgs  []string
 }
 
 // normalizedPaths is the lazy map of a WorkspaceScan from normalized path
@@ -1320,13 +1338,16 @@ func NewWorkspaceScan(root string) *WorkspaceScan {
 // indexPaths builds the path lookup tables after paths changed.
 func (w *WorkspaceScan) indexPaths() {
 	w.byPath = make(map[string]int, 2*len(w.paths))
+	w.abs = make([]string, len(w.paths))
 	for i, p := range w.paths {
 		if abs, err := filepath.Abs(p); err == nil {
 			w.byPath[abs] = i
+			w.abs[i] = abs
 		}
 		w.byPath[p] = i
 	}
 	w.norm = &normalizedPaths{}
+	w.pkgs = &loadPackagesMemo{}
 }
 
 // buildLoadTree reads the load tree of main.lisp from the files on disk.
@@ -1427,6 +1448,7 @@ func (w *WorkspaceScan) WithFile(path string, source []byte) (*WorkspaceScan, bo
 	scanned := scanWorkspaceFile(source, w.paths[i])
 	next.results = slices.Clone(w.results)
 	next.results[i] = scanned
+	next.pkgs = &loadPackagesMemo{}
 	changed := !sameTableEntries(&w.results[i], &scanned)
 	if w.inLoadTree(w.paths[i]) {
 		next.buildLoadTree()
@@ -1512,11 +1534,164 @@ func sameTableEntries(a, b *scannedFile) bool {
 		reflect.DeepEqual(a.recordMethods, b.recordMethods)
 }
 
+// inheritedInPackage returns the in-package form that Prescan puts
+// before the preamble of file idx, or nil. A file with no in-package form
+// takes the package of its load-file call (or of main.lisp), as the
+// runtime does, so its macros are defined in that package.
+func (w *WorkspaceScan) inheritedInPackage(idx int) *lisp.LVal {
+	pkg := w.inheritedPackage(idx)
+	if pkg == "" {
+		return nil
+	}
+	return lisp.Cells{
+		lisp.Symbol("in-package"),
+		lisp.Quote(lisp.Symbol(pkg)),
+	}.SExpr()
+}
+
+// inheritedPackage is the package of the in-package form of
+// inheritedInPackage, or "".
+func (w *WorkspaceScan) inheritedPackage(idx int) string {
+	r := &w.results[idx]
+	if r.filePkg != "" || len(r.preamble) == 0 {
+		return ""
+	}
+	if pkg := w.loadTree[w.abs[idx]]; pkg != "" {
+		return pkg
+	}
+	return w.defaultPkg
+}
+
+// FilePreamble returns the forms that Prescan adds to
+// WorkspacePrescan.Preamble for the file at path, and whether the scan
+// holds the file. Pass them to EnvMacroExpander.ReloadFileMacros, or
+// compare them with those of another scan to learn whether a change of
+// the file changed what LoadWorkspaceMacros loads. The caller must not
+// write the slice.
+func (w *WorkspaceScan) FilePreamble(path string) ([]*lisp.LVal, bool) {
+	i := w.find(path)
+	if i < 0 {
+		return nil, false
+	}
+	return w.filePreamble(i), true
+}
+
+// PreambleFilesFrom returns the paths of the files whose forms are at
+// index form or later in the Preamble of Prescan, in that order. A file
+// with a form on each side of the index is included. After a load of the
+// preamble that stopped at form (PreambleLoad.Unfinished), these are the
+// files whose macros are not all loaded.
+func (w *WorkspaceScan) PreambleFilesFrom(form int) []string {
+	var files []string
+	n := 0
+	w.preambleOrder(func(idx int) {
+		count := len(w.results[idx].preamble)
+		if w.inheritedPackage(idx) != "" {
+			count++
+		}
+		n += count
+		if count > 0 && n > form {
+			files = append(files, w.paths[idx])
+		}
+	})
+	return files
+}
+
+// filePreamble is FilePreamble of file idx.
+func (w *WorkspaceScan) filePreamble(idx int) []*lisp.LVal {
+	forms := w.results[idx].preamble
+	if inPkg := w.inheritedInPackage(idx); inPkg != nil {
+		forms = lisp.Cells{inPkg}.Append(forms...)
+	}
+	return forms
+}
+
+// preambleOrder visits the files in the order Prescan puts their
+// preambles: the load-tree DFS order of main.lisp (the order of the
+// runtime's sequential load-file evaluation), then the files the load
+// tree does not read. So macros see definitions in the same order as at
+// runtime.
+//
+// It calls visit for each file. Each save runs Prescan, so the order is
+// not collected into a slice. The load order holds absolute paths, which
+// byPath maps to their files.
+func (w *WorkspaceScan) preambleOrder(visit func(idx int)) {
+	var loaded []bool
+	if len(w.loadOrder) > 0 {
+		loaded = make([]bool, len(w.paths))
+		for _, absPath := range w.loadOrder {
+			if idx, ok := w.byPath[absPath]; ok {
+				visit(idx)
+				loaded[idx] = true
+			}
+		}
+	}
+	for i := range w.results {
+		if loaded == nil || !loaded[i] {
+			visit(i)
+		}
+	}
+}
+
+// loadPackages returns, for each file, the package that is active when
+// LoadWorkspaceMacros over Prescan().Preamble reaches the first form of
+// the file. start is the package active before the first form of the
+// whole preamble.
+//
+// The index build evaluates the preambles of all files in a row, so a
+// file with no in-package form (and no package from the load tree) runs
+// in the package the file before it left active. A reload of one file
+// must start there too, or its macros land in another package.
+//
+// The result is memoized on the scan, which never changes, and the
+// caller must not write it.
+func (w *WorkspaceScan) loadPackages(start string) []string {
+	w.pkgs.mu.Lock()
+	defer w.pkgs.mu.Unlock()
+	if w.pkgs.pkgs != nil && w.pkgs.start == start {
+		return w.pkgs.pkgs
+	}
+	pkgs := make([]string, len(w.results))
+	pkg := start
+	w.preambleOrder(func(idx int) {
+		pkgs[idx] = pkg
+		pkg = w.packageAfter(idx, pkg)
+	})
+	w.pkgs.start, w.pkgs.pkgs = start, pkgs
+	return pkgs
+}
+
+// packageAfter returns the package active after the preamble of file
+// idx, which starts in pkg. It is finalPackage of filePreamble(idx),
+// read from the scan of the file.
+func (w *WorkspaceScan) packageAfter(idx int, pkg string) string {
+	if last := w.results[idx].lastInPackage; last != "" {
+		return last
+	}
+	if inherited := w.inheritedPackage(idx); inherited != "" {
+		return inherited
+	}
+	return pkg
+}
+
+// loadPackageOf is loadPackages for the file at path, or start when the
+// scan is nil or does not hold the file.
+func (w *WorkspaceScan) loadPackageOf(path, start string) string {
+	if w == nil {
+		return start
+	}
+	i := w.find(path)
+	if i < 0 {
+		return start
+	}
+	return w.loadPackages(start)[i]
+}
+
 // Prescan merges the scans of the files into the tables of a
 // WorkspacePrescan. It writes neither the scan nor a slice of it.
 func (w *WorkspaceScan) Prescan() *WorkspacePrescan {
 	paths, results, truncated := w.paths, w.results, w.truncated
-	loadTree, loadOrder, defaultPkg := w.loadTree, w.loadOrder, w.defaultPkg
+	loadTree, defaultPkg := w.loadTree, w.defaultPkg
 
 	prescan := &WorkspacePrescan{
 		Files:          paths,
@@ -1526,50 +1701,12 @@ func (w *WorkspaceScan) Prescan() *WorkspacePrescan {
 		PackageImports: make(map[string][]string),
 		DefaultPackage: defaultPkg,
 	}
-	// Build a path→index map for ordering preambles by load tree.
-	pathIndex := make(map[string]int, len(paths))
-	for i, p := range paths {
-		absP, _ := filepath.Abs(p)
-		pathIndex[absP] = i
-	}
-
-	// appendFilePreamble adds a file's preamble forms with synthetic
-	// in-package for bare files inheriting the load context's package.
-	appendFilePreamble := func(idx int) {
-		r := results[idx]
-		if r.filePkg == "" && len(r.preamble) > 0 {
-			absPath, _ := filepath.Abs(paths[idx])
-			inheritedPkg := loadTree[absPath]
-			if inheritedPkg == "" {
-				inheritedPkg = defaultPkg
-			}
-			if inheritedPkg != "" {
-				syntheticInPkg := lisp.Cells{
-					lisp.Symbol("in-package"),
-					lisp.Quote(lisp.Symbol(inheritedPkg)),
-				}.SExpr()
-				prescan.Preamble = append(prescan.Preamble, syntheticInPkg)
-			}
+	w.preambleOrder(func(idx int) {
+		if inPkg := w.inheritedInPackage(idx); inPkg != nil {
+			prescan.Preamble = append(prescan.Preamble, inPkg)
 		}
-		prescan.Preamble = append(prescan.Preamble, r.preamble...)
-	}
-
-	// Aggregate preamble forms in load-tree DFS order (matching runtime's
-	// sequential load-file evaluation), then append files not in the load
-	// tree. This ensures macros see definitions in the same order as runtime.
-	loadedFiles := make(map[int]bool)
-	for _, absPath := range loadOrder {
-		if idx, ok := pathIndex[absPath]; ok {
-			appendFilePreamble(idx)
-			loadedFiles[idx] = true
-		}
-	}
-	// Files not in the load tree (not loaded via load-file from main.lisp).
-	for i := range results {
-		if !loadedFiles[i] {
-			appendFilePreamble(i)
-		}
-	}
+		prescan.Preamble = append(prescan.Preamble, results[idx].preamble...)
+	})
 
 	// Make room for the merged tables one time. An editor merges them
 	// again on each save, and a slice that grows entry by entry is
