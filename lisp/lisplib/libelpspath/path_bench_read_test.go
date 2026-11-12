@@ -193,6 +193,7 @@ func TestQueryGetCostIndependentOfDocumentSize(t *testing.T) {
 		require.Equal(t, `"status-value"`, got.String())
 		return testing.AllocsPerRun(20, func() { _ = BuiltinQueryGet(env, args) })
 	}
-	assert.Equal(t, allocs(10), allocs(1000),
+	// AllocsPerRun reports a whole count as a float64; compare it as an int.
+	assert.Equal(t, int(allocs(10)), int(allocs(1000)),
 		"a shallow read must not allocate in proportion to the document")
 }

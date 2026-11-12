@@ -264,8 +264,7 @@ func TestValidateDocumentRefusesGoNilCell(t *testing.T) {
 	doc := func() *lisp.LVal { return mapHolding("xs", lisp.Vector([]*lisp.LVal{lisp.Int(1), nil})) }
 	var err error
 	require.NotPanics(t, func() { err = ValidateDocument(doc()) })
-	require.Error(t, err)
-	assert.ErrorIs(t, err, errNilCell)
+	require.ErrorIs(t, err, errNilCell)
 
 	got := callBuiltin(testEnv(t), BuiltinQuerySet, doc(), lisp.String("y"), lisp.Int(2))
 	require.Equal(t, lisp.LError, got.Type, "%v", got)

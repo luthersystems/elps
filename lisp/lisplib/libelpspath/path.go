@@ -2012,7 +2012,7 @@ func (s *iterPath) get(in *lisp.LVal, op *copyOp) (*lisp.LVal, error) {
 	// may add more, in which case this is a floor.
 	results := make([]*lisp.LVal, 0, len(horizon))
 	for _, item := range horizon {
-		if err := op.charge(1); err != nil {
+		if err = op.charge(1); err != nil {
 			return nil, err
 		}
 		// A host-built Go nil cell (#960) fails like any other element
