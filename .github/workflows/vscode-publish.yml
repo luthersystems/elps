@@ -8,9 +8,8 @@ on:
       - "v*"
 
 # Least privilege (code scanning: actions/missing-workflow-permissions). No job
-# writes to GitHub: artifacts pass through the run's own storage and the
-# Marketplace publish authenticates with VSCE_PAT, not GITHUB_TOKEN. A move to
-# an OIDC publish (azure/login) adds `id-token: write` on the publish jobs only.
+# writes to GitHub: artifacts pass through the run's own storage. The publish
+# jobs add only `id-token: write`, for Marketplace Trusted Publishing.
 permissions:
   contents: read
 
@@ -42,7 +41,7 @@ jobs:
       - name: Report unauthenticated discovery and published version inventory
         run: node scripts/marketplace-diagnostics.cjs
 
-  # The diagnostics above intentionally cannot use a PAT or publish
+  # The diagnostics above intentionally cannot sign in or publish
   # (background: #638).
 
   # A tag publishes to the Marketplace, so it must be a stable version
@@ -147,6 +146,13 @@ jobs:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     name: Publish (${{ matrix.target }})
     needs: build-binaries
+    # Publishes with Marketplace Trusted Publishing (`vsce publish --oidc`): the
+    # LutherSystems publisher's policy trusts only this repo, this workflow and
+    # the environment vscode-marketplace, and only v* tags may deploy to it.
+    environment: vscode-marketplace
+    permissions:
+      contents: read
+      id-token: write
     # ARM for the reason on elps.yml's lint-and-test job. `--target` below is
     # the VS Code platform package being published, NOT the host: it is a
     # label vsce writes into the VSIX, so it is unaffected. The npm side is
@@ -203,14 +209,19 @@ jobs:
 
       - name: Publish platform package
         working-directory: editors/vscode
-        run: npx vsce publish --target ${{ matrix.target }} -p "$VSCE_PAT"
-        env:
-          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+        run: npx vsce publish --target ${{ matrix.target }} --oidc
 
   publish-universal:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     name: Publish (universal)
     needs: build-binaries
+    # Publishes with Marketplace Trusted Publishing (`vsce publish --oidc`): the
+    # LutherSystems publisher's policy trusts only this repo, this workflow and
+    # the environment vscode-marketplace, and only v* tags may deploy to it.
+    environment: vscode-marketplace
+    permissions:
+      contents: read
+      id-token: write
     # ARM for the reason on elps.yml's lint-and-test job; same npm/esbuild
     # note as publish-platform above.
     runs-on: ubuntu-24.04-arm
@@ -244,6 +255,4 @@ jobs:
 
       - name: Publish universal package
         working-directory: editors/vscode
-        run: npx vsce publish -p "$VSCE_PAT"
-        env:
-          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+        run: npx vsce publish --oidc

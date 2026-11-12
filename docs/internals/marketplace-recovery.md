@@ -7,7 +7,9 @@ published Go module does not establish that every VSIX target is available.
 
 The existing `Publish VS Code Extension` workflow has a **read-only manual
 mode**. Tag pushes still build and publish the original five packages. Manual
-runs cannot build or publish, and do not receive `VSCE_PAT`.
+runs cannot build or publish: only the tag-triggered publish jobs run in the
+environment `vscode-marketplace`, and the publisher's Trusted Publishing policy
+accepts an OIDC token only from that environment.
 
 ```sh
 gh workflow run vscode-publish.yml --repo luthersystems/elps --ref <reviewed-branch>

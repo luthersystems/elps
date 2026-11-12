@@ -26,8 +26,8 @@ def validate(doc):
         assert jobs[name]["if"] == TAG_ONLY
         assert jobs[name]["runs-on"] == "ubuntu-24.04-arm"
         assert "concurrency" not in jobs[name]
-    # Every job defaults to read-only GITHUB_TOKEN; publishing uses VSCE_PAT.
-    # A job may add id-token (for an OIDC publish) but never a write scope.
+    # Every job defaults to a read-only GITHUB_TOKEN. A job may add id-token
+    # (the publish jobs do, for Trusted Publishing) but never a write scope.
     assert doc.get("permissions") == {"contents": "read"}
     for name, job in jobs.items():
         perms = job.get("permissions", {})
@@ -38,6 +38,7 @@ def validate(doc):
     assert "env" not in doc
     assert "concurrency" not in doc
     validate_tag_on_main(jobs)
+    validate_publish_identity(jobs)
     validate_diagnostic(jobs["diagnose-marketplace"])
 
 
@@ -58,6 +59,27 @@ def validate_tag_on_main(jobs):
     assert jobs["build-binaries"].get("needs") == "tag-on-main"
     assert jobs["publish-platform"].get("needs") == "build-binaries"
     assert jobs["publish-universal"].get("needs") == "build-binaries"
+
+
+def validate_publish_identity(jobs):
+    # The publish jobs use Marketplace Trusted Publishing (`vsce publish
+    # --oidc`): the publisher's policy trusts only this repo, this workflow and
+    # the environment vscode-marketplace. No job reads a stored Marketplace
+    # secret, and no other sign-in step runs.
+    for name in ("publish-platform", "publish-universal"):
+        job = jobs[name]
+        assert job["environment"] == "vscode-marketplace"
+        assert job["permissions"] == {"contents": "read", "id-token": "write"}
+        assert "secrets." not in yaml.safe_dump(job)
+        steps = job["steps"]
+        assert not any(st.get("uses", "").startswith("azure/login@") for st in steps)
+        publish = [st["run"] for st in steps if "vsce publish" in st.get("run", "")]
+        assert len(publish) == 1
+        assert publish[0].split()[-1] == "--oidc"
+        assert " -p " not in publish[0] and "--pat" not in publish[0]
+    for name in ("tag-on-main", "build-binaries", "diagnose-marketplace"):
+        assert "id-token" not in yaml.safe_dump(jobs[name].get("permissions", {}))
+        assert "environment" not in jobs[name]
 
 
 def validate_diagnostic(job):
@@ -130,6 +152,25 @@ class PublicationIsolation(unittest.TestCase):
                     changed["jobs"][name]["needs"] = needs
                 with self.assertRaises(AssertionError):
                     validate(changed)
+        # The publish jobs must keep the OIDC identity and no stored secret.
+        for name in ("publish-platform", "publish-universal"):
+            for field, value in (("environment", None), ("permissions", {"contents": "read"}),
+                                 ("env", {"VSCE_PAT": "${{ secrets.VSCE_PAT }}"})):
+                with self.subTest(publish_identity=name, field=field):
+                    changed = copy.deepcopy(doc)
+                    changed["jobs"][name][field] = value
+                    with self.assertRaises(AssertionError):
+                        validate(changed)
+        # The publish step must keep --oidc and not fall back to a PAT.
+        for name in ("publish-platform", "publish-universal"):
+            for old, new in (("--oidc", ""), ("--oidc", '-p "$VSCE_PAT"')):
+                with self.subTest(publish_flag=name, replacement=new):
+                    changed = copy.deepcopy(doc)
+                    for st in changed["jobs"][name]["steps"]:
+                        if "vsce publish" in st.get("run", ""):
+                            st["run"] = st["run"].replace(old, new).strip()
+                    with self.assertRaises(AssertionError):
+                        validate(changed)
         changed = copy.deepcopy(doc)
         changed["jobs"]["tag-on-main"]["steps"][-1]["run"] = "true"
         with self.assertRaises(AssertionError):
@@ -181,10 +222,9 @@ class OptionalNodeGate(unittest.TestCase):
         block = block.split('echo "== extracted workflow bodies: bench-compare', 1)[0]
         self.assertIn("marketplace-diagnostics.test.cjs", block)
         script = 'fail=0\nok() { :; }\nbad() { fail=1; }\n' + helper + block + '\nexit "$fail"\n'
-        # The script is this repository's own ci-gates-test.sh block, run with
-        # argv (no shell=True); nothing in it comes from outside the checkout.
-        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit
-        return subprocess.run(["/bin/bash", "-c", script], check=False, text=True,
+        # The script is built from this repo's own scripts/ci-gates-test.sh, never
+        # from outside input, so the Semgrep subprocess audit does not apply.
+        return subprocess.run(["/bin/bash", "-c", script], check=False, text=True,  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit
                               capture_output=True, timeout=15,
                               env={**os.environ, "PATH": path, "SCRIPT_DIR": str(script_dir)})
 
