@@ -88,6 +88,7 @@ var specialOpAllowlist = map[string]string{
 	"lisp/codewalk.go:var formKinds":                            "the single registry of structural special forms",
 	"lisp/inspect.go:InspectFunction":                           "runtime function introspection identifies expr values",
 	"lisp/macro.go:getUnquoteType":                              "runtime quasiquote evaluator classifies its holes",
+	"lisp/lower.go:var specialOpLowerings":                      "the registry of lowerings, keyed by the special operator each one replaces",
 	"lisp/macro.go:var lateMacros":                              "special-form spellings in builtin macro registration",
 	"lisp/op.go:var lateSpecialOps":                             "the runtime special-operator registry",
 	"lisp/x/debugger/debugrepl/repl.go:debugHandler.handleLine": "debugger REPL command named help",
