@@ -17,8 +17,15 @@
 // functions, are opaque leaves shared by reference. Further steps into a
 // leaf fail with its type and location. Out-of-range integer writes leave the
 // document unchanged. In-place list element edits remain unsupported.
-// Containers, including those inside tagged and quote wrappers, must be
-// acyclic, and arrays must be one-dimensional. Opaque internals are not walked.
+// The writes validate the whole document first: containers, including those
+// inside tagged and quote wrappers, must be acyclic, and arrays must be
+// one-dimensional, because a write can copy or rebuild any part of it. ? does
+// not (#960). A read with a finite path never walks beyond the containers on
+// that path (and the elements an iterator fans out over), and never recurses
+// into the value it returns, so a fault elsewhere cannot change its answer;
+// validating the whole document made every read cost O(document). The
+// accessors on the path refuse a bad shape they step into themselves. Opaque
+// internals are not walked.
 //
 //	(elpspath:?      val &rest steps)             ; get
 //	(elpspath:?set!  val &rest steps-and-value)   ; set (mutating)
@@ -251,9 +258,11 @@ func BuiltinQueryGet(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	}
 	val := args.Cells[0]
 	steps := args.Cells[1:]
-	if err := okSimpleType(val); err != nil {
-		return env.Error(err)
-	}
+	// No whole-document gate here, unlike the writes (#960): the read only
+	// visits containers on its path, and the accessors refuse a bad shape
+	// when the path steps into one -- toCells an array that is not
+	// one-dimensional, indexTypeError any wrapper or leaf, and errNilCell a
+	// host-built Go nil cell.
 	path, err := ArgsToPath(steps)
 	if err != nil {
 		return env.Error(err)

@@ -14,23 +14,23 @@
 ; a failure recover() cannot catch, so handler-bind never saw it.  The kernel
 ; had already been bounded (#391) and rendered the same value as #<cycle>, so
 ; the process died through the path engine while the printer survived.
+; Since #960 a read is path-scoped: it takes finitely many steps and never
+; recurses into what it returns, so it answers on a cyclic value.  The writes
+; still validate the whole document and refuse it.
 (test "cyclic-value-refused"
   (let ([v (vector 1 2)])
     (append! v v)
-    (assert-string= "caught"
-                    (handler-bind ([error (lambda (_c _) "caught")])
-                      (elpspath:? v 0)))
+    (assert-equal 1 (elpspath:? v 0))
+    (assert-equal 1 (elpspath:? v 2 2 0))
     (assert-string= "caught"
                     (handler-bind ([error (lambda (_c _) "caught")])
                       (elpspath:?set v "k" "v")))
     (assert-string= "caught"
                     (handler-bind ([error (lambda (_c _) "caught")])
                       (elpspath:?del! v 0))))
-  (let ([m (sorted-map)])
+  (let ([m (sorted-map "x" 1)])
     (assoc! m "k" m)
-    (assert-string= "caught"
-                    (handler-bind ([error (lambda (_c _) "caught")])
-                      (elpspath:? m "k")))
+    (assert-equal 1 (elpspath:? m "k" "k" "x"))
     (assert-string= "caught"
                     (handler-bind ([error (lambda (_c _) "caught")])
                       (elpspath:?nil m "k"))))

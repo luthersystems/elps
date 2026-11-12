@@ -314,24 +314,37 @@ func TestPathologicalValuesNeverPanic(t *testing.T) {
 	t.Parallel()
 
 	t.Run("cycles", func(t *testing.T) {
-		// A value that contains itself must be REFUSED, not walked forever
-		// and not crashed on (issue #393). Every operation, since each runs
-		// its own walk.
+		// A write on a value that contains itself must be REFUSED, not
+		// walked forever and not crashed on (issue #393). Every operation,
+		// since each runs its own walk.
 		for _, src := range []string{
-			`(let ([v (vector 1 2)]) (append! v v) (elpspath:? v 2 2 2 2 0))`,
-			`(let ([v (vector 1 2)]) (append! v v) (elpspath:? v '*))`,
 			`(let ([v (vector 1 2)]) (append! v v) (elpspath:?set v 0 9))`,
 			`(let ([v (vector 1 2)]) (append! v v) (elpspath:?set! v 0 9))`,
 			`(let ([v (vector 1 2)]) (append! v v) (elpspath:?del v 0))`,
 			`(let ([v (vector 1 2)]) (append! v v) (elpspath:?del! v '(range 0)))`,
 			`(let ([v (vector 1 2)]) (append! v v) (elpspath:?nil v '(range 0)))`,
 			`(let ([m (sorted-map "a" 1)]) (assoc! m "self" m) (elpspath:?set m "a" 9))`,
+		} {
+			env := noPanicEnv(t)
+			res := evalNoPanic(t, env, "cycle", src)
+			require1Error(t, res, src)
+		}
+		// A read takes a finite number of steps and never recurses into
+		// what it returns, so it ANSWERS on a cyclic value rather than
+		// refusing it (#960, which dropped the whole-document gate from
+		// reads). These were refusals before; the property kept is that
+		// none walks forever or panics.
+		for _, src := range []string{
+			`(let ([v (vector 1 2)]) (append! v v) (elpspath:? v 2 2 2 2 0))`,
+			`(let ([v (vector 1 2)]) (append! v v) (elpspath:? v '*))`,
 			// A cycle created THROUGH the operation under test.
 			`(let ([v (vector 1 2)]) (elpspath:?set! v 0 v) (elpspath:? v 0 0 0 0))`,
 		} {
 			env := noPanicEnv(t)
 			res := evalNoPanic(t, env, "cycle", src)
-			require1Error(t, res, src)
+			if res.Type == lisp.LError {
+				t.Errorf("a finite read of a cyclic value must answer, got %v\n  %s", res, src)
+			}
 		}
 	})
 

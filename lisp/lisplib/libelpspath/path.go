@@ -197,11 +197,12 @@ walk:
 				dims, data := v.ArrayParts()
 				n := dims.Len()
 				if n > 1 {
-					out = lisp.Nil()
-					if next.tracking() {
-						next.ascend(v)
-					}
-					break
+					// Refused, not replaced with nil: that silently dropped
+					// the array from the copy. The builtins' gate stops this
+					// shape first, but the Path API runs no gate, and an
+					// embedder that gated writes through a read lost that
+					// gate when reads became path-scoped (#960).
+					return nil, errors.New("cannot index multi-dimensional array")
 				}
 				if n == 0 {
 					return nil, errors.New("cannot index zero-dimensional array")
@@ -1235,6 +1236,9 @@ func (s *dotPath) Get(in *lisp.LVal) (*lisp.LVal, error) {
 		mmap := in.Map()
 		v, ok := mmap.Get(lisp.String(s.key))
 		if ok {
+			if v == nil {
+				return nil, errNilCell
+			}
 			return v, nil
 		}
 		return lisp.Nil(), nil
@@ -1359,6 +1363,9 @@ func (s *indexPath) Get(in *lisp.LVal) (*lisp.LVal, error) {
 	index, ok := resolveIndex(len(cells), s.index)
 	if !ok {
 		return lisp.Nil(), nil
+	}
+	if cells[index] == nil {
+		return nil, errNilCell
 	}
 	return cells[index], nil
 }
@@ -1981,7 +1988,14 @@ func (s *iterPath) get(in *lisp.LVal, op *copyOp) (*lisp.LVal, error) {
 		if err := op.charge(1); err != nil {
 			return nil, err
 		}
-		got, err := getPath(s.path, item, op)
+		var got *lisp.LVal
+		if item == nil {
+			// A host-built Go nil cell (#960): the element fails, like
+			// any other element the rest of the path cannot read.
+			err = errNilCell
+		} else {
+			got, err = getPath(s.path, item, op)
+		}
 		if err != nil {
 			if op.stopped() {
 				return nil, err
