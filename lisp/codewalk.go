@@ -261,12 +261,6 @@ type CodeWalker struct {
 	// visits.
 	Expand1 func(form *LVal) (expansion *LVal, ok bool)
 
-	// Lower expands each special operator of package lisp that has a
-	// lowering (HasLowering) into that lowering, as if it were a macro.
-	// It is for tools that model the forms macros expanded to and not the
-	// special operators that replaced those macros.
-	Lower bool
-
 	// env, when set (MacroExpandAll), compiles macrolet bindings so calls
 	// to local macros are expanded.  Without it they are left unexpanded
 	// and their arguments are not walked.
@@ -301,6 +295,12 @@ type CodeWalker struct {
 	// stopping the walk.  Tools that must see all of a file (lint) set
 	// it; macroexpand-all does not.
 	KeepGoing bool
+
+	// Lower expands each special operator of package lisp that has a
+	// lowering (HasLowering) into that lowering, as if it were a macro.
+	// It is for tools that model the forms macros expanded to and not the
+	// special operators that replaced those macros.
+	Lower bool
 
 	// Source policy is available only through internal/codewalk's adapter.
 	sourceAnalysis         bool
