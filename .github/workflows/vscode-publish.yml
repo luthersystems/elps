@@ -35,7 +35,7 @@ jobs:
       - name: Report unauthenticated discovery and published version inventory
         run: node scripts/marketplace-diagnostics.cjs
 
-  # The diagnostics above intentionally cannot use a PAT or publish
+  # The diagnostics above intentionally cannot sign in or publish
   # (background: #638).
 
   # A tag publishes to the Marketplace, so it must be a stable version
@@ -140,6 +140,13 @@ jobs:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     name: Publish (${{ matrix.target }})
     needs: build-binaries
+    # Publishes with the Entra app vsce-publish (luthersystems/common-infrastructure
+    # azure-vsce/), which trusts only this repo's environment vscode-marketplace,
+    # and only v* tags may deploy to it.
+    environment: vscode-marketplace
+    permissions:
+      contents: read
+      id-token: write
     # ARM for the reason on elps.yml's lint-and-test job. `--target` below is
     # the VS Code platform package being published, NOT the host: it is a
     # label vsce writes into the VSIX, so it is unaffected. The npm side is
@@ -194,16 +201,28 @@ jobs:
         working-directory: editors/vscode
         run: npm run build
 
+      - name: Sign in to Entra (OIDC, no stored secret)
+        uses: azure/login@7ddb5af1ef8758cf1353cf3b42f940aee27ba21c  # v3.0.2
+        with:
+          client-id: 4884a339-1a61-49c6-bc4f-56a852251eb9
+          tenant-id: a47b59dc-3c90-49c8-84bc-0c9fcaa05616
+          allow-no-subscriptions: true
+
       - name: Publish platform package
         working-directory: editors/vscode
-        run: npx vsce publish --target ${{ matrix.target }} -p "$VSCE_PAT"
-        env:
-          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+        run: npx vsce publish --target ${{ matrix.target }} --azure-credential
 
   publish-universal:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     name: Publish (universal)
     needs: build-binaries
+    # Publishes with the Entra app vsce-publish (luthersystems/common-infrastructure
+    # azure-vsce/), which trusts only this repo's environment vscode-marketplace,
+    # and only v* tags may deploy to it.
+    environment: vscode-marketplace
+    permissions:
+      contents: read
+      id-token: write
     # ARM for the reason on elps.yml's lint-and-test job; same npm/esbuild
     # note as publish-platform above.
     runs-on: ubuntu-24.04-arm
@@ -235,8 +254,13 @@ jobs:
         working-directory: editors/vscode
         run: npm run build
 
+      - name: Sign in to Entra (OIDC, no stored secret)
+        uses: azure/login@7ddb5af1ef8758cf1353cf3b42f940aee27ba21c  # v3.0.2
+        with:
+          client-id: 4884a339-1a61-49c6-bc4f-56a852251eb9
+          tenant-id: a47b59dc-3c90-49c8-84bc-0c9fcaa05616
+          allow-no-subscriptions: true
+
       - name: Publish universal package
         working-directory: editors/vscode
-        run: npx vsce publish -p "$VSCE_PAT"
-        env:
-          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+        run: npx vsce publish --azure-credential

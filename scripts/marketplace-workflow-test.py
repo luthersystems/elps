@@ -29,6 +29,7 @@ def validate(doc):
     assert "env" not in doc
     assert "concurrency" not in doc
     validate_tag_on_main(jobs)
+    validate_publish_identity(jobs)
     validate_diagnostic(jobs["diagnose-marketplace"])
 
 
@@ -49,6 +50,25 @@ def validate_tag_on_main(jobs):
     assert jobs["build-binaries"].get("needs") == "tag-on-main"
     assert jobs["publish-platform"].get("needs") == "build-binaries"
     assert jobs["publish-universal"].get("needs") == "build-binaries"
+
+
+def validate_publish_identity(jobs):
+    # The publish jobs sign in to Entra with OIDC (the app vsce-publish,
+    # common-infrastructure azure-vsce/), which trusts only the environment
+    # vscode-marketplace. No job reads a stored Marketplace secret.
+    for name in ("publish-platform", "publish-universal"):
+        job = jobs[name]
+        assert job["environment"] == "vscode-marketplace"
+        assert job["permissions"] == {"contents": "read", "id-token": "write"}
+        assert "secrets." not in yaml.safe_dump(job)
+        steps = job["steps"]
+        logins = [i for i, st in enumerate(steps) if st.get("uses", "").startswith("azure/login@")]
+        publish = [i for i, st in enumerate(steps) if "vsce publish" in st.get("run", "")]
+        assert len(logins) == 1 and len(publish) == 1 and logins[0] < publish[0]
+        assert "--azure-credential" in steps[publish[0]]["run"]
+    for name in ("tag-on-main", "build-binaries", "diagnose-marketplace"):
+        assert "id-token" not in yaml.safe_dump(jobs[name].get("permissions", {}))
+        assert "environment" not in jobs[name]
 
 
 def validate_diagnostic(job):
@@ -105,6 +125,15 @@ class PublicationIsolation(unittest.TestCase):
                     changed["jobs"][name]["needs"] = needs
                 with self.assertRaises(AssertionError):
                     validate(changed)
+        # The publish jobs must keep the OIDC identity and no stored secret.
+        for name in ("publish-platform", "publish-universal"):
+            for field, value in (("environment", None), ("permissions", {"contents": "read"}),
+                                 ("env", {"VSCE_PAT": "${{ secrets.VSCE_PAT }}"})):
+                with self.subTest(publish_identity=name, field=field):
+                    changed = copy.deepcopy(doc)
+                    changed["jobs"][name][field] = value
+                    with self.assertRaises(AssertionError):
+                        validate(changed)
         changed = copy.deepcopy(doc)
         changed["jobs"]["tag-on-main"]["steps"][-1]["run"] = "true"
         with self.assertRaises(AssertionError):
