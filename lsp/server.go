@@ -1083,7 +1083,12 @@ func (s *Server) updateFileIndex(uri string) indexUpdate {
 		// meanwhile.
 		up := indexUpdate{tables: changed}
 		up.macros = s.reloadFileMacros(exp, old, scan, name)
-		scan, changed = s.withGenerated(exp, scan, name, source, up.macros)
+		genName := name
+		if up.macros {
+			// A changed macro can change what a call in any file defines.
+			genName = ""
+		}
+		scan, changed = s.withGenerated(exp, scan, genName, source)
 		up.tables = up.tables || changed
 		s.analysisCfgMu.Lock()
 		up.records = s.storeWorkspaceScan(scan, name)
@@ -1164,15 +1169,17 @@ func (s *Server) reloadFileMacros(exp *analysis.EnvMacroExpander, old, next *ana
 }
 
 // withGenerated returns scan with the definitions that the macro calls
-// of the file name make, or of every file when allFiles, expanded by exp
+// of the file name make, or of every file when name is "", expanded by exp
 // (see analysis.WorkspaceScan.WithGeneratedDefinitions). It reports
 // whether they changed. A save computes them for the saved file only,
 // unless it loaded macros again: then a call in any file can expand to
-// other definitions. Without an expander it returns scan.
+// other definitions. source is the text of name the save scanned (nil
+// for none). Without an expander it returns scan.
 //
 // The caller holds macroReloadMu and not analysisCfgMu: the expansion
 // evaluates Lisp.
-func (s *Server) withGenerated(exp *analysis.EnvMacroExpander, scan *analysis.WorkspaceScan, name string, source []byte, allFiles bool) (*analysis.WorkspaceScan, bool) {
+func (s *Server) withGenerated(exp *analysis.EnvMacroExpander, scan *analysis.WorkspaceScan, name string, source []byte) (*analysis.WorkspaceScan, bool) {
+	allFiles := name == ""
 	if exp == nil || !allFiles && !scan.MayGenerateDefinitions(name) {
 		// A file of defun and set forms: no tables to merge for it, so
 		// the save costs what it did before (luthersystems/elps#944).
@@ -1235,7 +1242,7 @@ func (s *Server) removeFileIndex(filePath string) indexUpdate {
 		if up.macros {
 			// The removed file defined macros: what the calls of the other
 			// files define can change with them.
-			scan, _ = s.withGenerated(exp, scan, "", nil, true)
+			scan, _ = s.withGenerated(exp, scan, "", nil)
 		}
 		s.analysisCfgMu.Lock()
 		up.records = s.storeWorkspaceScan(scan, name)
