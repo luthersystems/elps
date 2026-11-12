@@ -40,9 +40,10 @@ Writes need containers that are acyclic and arrays with exactly one
 dimension, and check this throughout the document, including off-path
 containers and the contents of tagged values and quote wrappers, because a
 write may copy or rebuild any of them. New values pass the same check.
-A read (?) checks only what its path steps into: it never walks beyond
-its path or into the value it returns, so a fault elsewhere cannot change
-its answer, and its cost follows the path rather than the document.
+A read (?) with a path checks only what that path steps into: it never
+walks beyond its path or into the value it returns, so a fault elsewhere
+cannot change its answer, and its cost follows the path rather than the
+document. A read with no path checks the whole document, as writes do.
 Function bodies and captured environments remain opaque and shared; they
 are not walked.
 
@@ -320,7 +321,8 @@ var errNilCell = errors.New("invalid document: nil cell")
 // point that begins a walk.
 //
 // With okSimpleType this is the gate every write builtin runs before
-// touching a value; ? does not, because a read only visits its path (#960).
+// touching a value; ? with a path does not, because such a read only visits
+// its path (#960).
 // The copy walk refuses a multi-dimensional array itself as well, since it
 // cannot construct a copy of one and an embedder can reach it through the
 // Path API without this gate.  A cycle
@@ -493,12 +495,13 @@ func okSimpleMapUnordered(in *lisp.LVal, g cycleGuard) error {
 // refuses cycles, arrays that are not one-dimensional, and malformed
 // tagged or quote wrappers anywhere in v. A write can copy or rebuild any
 // part of the document, so it needs the whole graph to be sound; a read
-// does not, and ? no longer runs it (#960).
+// with a path does not, and ? runs it only when given no path (#960).
 //
 // It is exported so an embedder (luthersystems/substrate's v1 builtins) can
 // gate its own writes directly instead of calling (elpspath:? v) for the
-// side effect, which stopped validating anything once reads became
-// path-scoped.
+// side effect. That no-step read still runs this gate, so existing
+// embedders stay safe, but it is the only read that does, and saying what
+// is meant is clearer than relying on it.
 func ValidateDocument(v *lisp.LVal) error { return okSimpleType(v) }
 
 // okSimpleType validates the container graph, accepting arbitrary opaque leaves.
@@ -508,9 +511,9 @@ func ValidateDocument(v *lisp.LVal) error { return okSimpleType(v) }
 // not 2^D, on every elpspath write.
 // Every write builtin retains this guard: copying supports lists, maps,
 // one-dimensional arrays, and tagged/quote wrappers. These walks reject cycles.
-// ? does not run it: a read visits only its path and never copies, so the
-// whole-document walk would make every read cost O(document) for nothing
-// (#960).
+// ? with a path does not run it: such a read visits only its path and never
+// copies, so the whole-document walk would make every read cost O(document)
+// for nothing (#960). ? with no path still runs it (see BuiltinQueryGet).
 // Opaque leaf storage (bytes, native payloads, function bodies/environments)
 // is neither traversed nor copied by elpspath.
 //
@@ -562,6 +565,11 @@ func okSimpleTypeUnordered(in *lisp.LVal) (valid bool) { //nolint:nonamedreturns
 // that overflows the stack is okSimpleType <-> okSimpleContainerType, so a
 // bound either survives the round trip or does nothing.
 func okSimpleTypeGuarded(in *lisp.LVal, g cycleGuard) error {
+	// A host-built Go nil cell is a fault to report, not a panic: the
+	// ordered pass decides the gate's answer, so it must return one.
+	if err := checkCell(in); err != nil {
+		return err
+	}
 	if in.IsNil() {
 		// allow nil as a placeholder for removed elements
 		return nil

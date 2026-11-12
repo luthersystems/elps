@@ -1576,7 +1576,7 @@ and are not walked for copying or cycle checks. The replacement supplied to
 Writes check for cyclic containers and arrays with other than one dimension
 throughout the document, including containers outside the path and inside
 tagged values or quote wrappers, because a write may copy or rebuild any of
-them. Replacement values pass the same check. Reads (`elpspath:?`) do not:
+them. Replacement values pass the same check. Reads (`elpspath:?`) with a path do not:
 a read visits only the containers on its path and never walks into the value
 it returns, so its cost follows the path, not the document. A fault off the
 path does not affect a read. Stepping into one still fails: indexing an array
@@ -1584,9 +1584,12 @@ with other than one dimension, or stepping into a tagged value or quote
 wrapper, raises an error. A read whose path runs through a cyclic value
 returns what it finds there. Opaque leaf internals are not walked.
 
-Embedders that need the whole-document check before their own writes call
-`libelpspath.ValidateDocument`. Calling `(elpspath:? v)` for that purpose no
-longer validates anything.
+A read with no path, `(elpspath:? v)`, still checks the whole document, since
+there is no path to scope it to and embedders have used it as a write gate.
+New embedder code should call `libelpspath.ValidateDocument` for that check
+instead. Under nested iterators (`'* '*`), an element the inner iterator
+cannot step into contributes `()` at its position, as under a single `'*`.
+
 An iterator keeps its per-element error handling: a failed read contributes
 `()` and a failed write leaves that element unchanged.
 

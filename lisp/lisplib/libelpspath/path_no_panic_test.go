@@ -275,7 +275,8 @@ func TestEveryValueTypeNeverPanics(t *testing.T) {
 	}
 
 	// The same crossing again through the Go API, which is NOT redundant:
-	// the builtins run okSimpleType before they build a path, and that gate
+	// the write builtins (and a no-step read) run okSimpleType before they
+	// build a path, and that gate
 	// duplicates several of the accessor's own checks. Measured -- reverting
 	// toCells' dimensionality guard on its own left this test green through
 	// the builtin arm alone, because okSimpleContainerContents caught the
@@ -334,16 +335,16 @@ func TestPathologicalValuesNeverPanic(t *testing.T) {
 		// refusing it (#960, which dropped the whole-document gate from
 		// reads). These were refusals before; the property kept is that
 		// none walks forever or panics.
-		for _, src := range []string{
-			`(let ([v (vector 1 2)]) (append! v v) (elpspath:? v 2 2 2 2 0))`,
-			`(let ([v (vector 1 2)]) (append! v v) (elpspath:? v '*))`,
+		for _, tc := range []struct{ src, want string }{
+			{`(let ([v (vector 1 2)]) (append! v v) (elpspath:? v 2 2 2 2 0))`, "1"},
+			{`(let ([v (vector 1 2)]) (append! v v) (elpspath:? v '*))`, "(vector 1 2 (vector 1 2 #<cycle>))"},
 			// A cycle created THROUGH the operation under test.
-			`(let ([v (vector 1 2)]) (elpspath:?set! v 0 v) (elpspath:? v 0 0 0 0))`,
+			{`(let ([v (vector 1 2)]) (elpspath:?set! v 0 v) (elpspath:? v 0 0 0 0))`, "(vector #<cycle> 2)"},
 		} {
 			env := noPanicEnv(t)
-			res := evalNoPanic(t, env, "cycle", src)
-			if res.Type == lisp.LError {
-				t.Errorf("a finite read of a cyclic value must answer, got %v\n  %s", res, src)
+			res := evalNoPanic(t, env, "cycle", tc.src)
+			if res.Type == lisp.LError || res.String() != tc.want {
+				t.Errorf("a finite read of a cyclic value must answer %s, got %v\n  %s", tc.want, res, tc.src)
 			}
 		}
 	})

@@ -19,8 +19,10 @@
 // document unchanged. In-place list element edits remain unsupported.
 // The writes validate the whole document first: containers, including those
 // inside tagged and quote wrappers, must be acyclic, and arrays must be
-// one-dimensional, because a write can copy or rebuild any part of it. ? does
-// not (#960). A read with a finite path never walks beyond the containers on
+// one-dimensional, because a write can copy or rebuild any part of it. ? with
+// at least one step does not (#960); ? with none still does, because there is
+// no path to scope it to and embedders use it as a write gate. A read with a
+// finite path never walks beyond the containers on
 // that path (and the elements an iterator fans out over), and never recurses
 // into the value it returns, so a fault elsewhere cannot change its answer;
 // validating the whole document made every read cost O(document). The
@@ -258,7 +260,16 @@ func BuiltinQueryGet(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	}
 	val := args.Cells[0]
 	steps := args.Cells[1:]
-	// No whole-document gate here, unlike the writes (#960): the read only
+	// With no steps there is no path to scope the read to, and
+	// (elpspath:? v) is the idiom embedders use as a whole-document write
+	// gate (substrate's checkSimpleType), so it keeps the gate. Hot reads
+	// always have steps and never pay for it.
+	if len(steps) == 0 {
+		if err := okSimpleType(val); err != nil {
+			return env.Error(err)
+		}
+	}
+	// Otherwise no whole-document gate, unlike the writes (#960): the read only
 	// visits containers on its path, and the accessors refuse a bad shape
 	// when the path steps into one -- toCells an array that is not
 	// one-dimensional, indexTypeError any wrapper or leaf, and errNilCell a

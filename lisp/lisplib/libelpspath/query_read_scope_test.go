@@ -214,3 +214,106 @@ func TestCopyRefusesMultiDimArray(t *testing.T) {
 		})
 	}
 }
+
+// TestQueryGetWithoutPathStillValidates pins the one read that keeps the
+// whole-document gate: (elpspath:? v) with no steps. Embedders use it as a
+// write gate (substrate's checkSimpleType does), so it keeps refusing the
+// shapes it refused before #960, with the same text, while a read with a
+// path answers on the same documents.
+func TestQueryGetWithoutPathStillValidates(t *testing.T) {
+	for name, tc := range map[string]struct {
+		doc  *lisp.LVal
+		want string
+	}{
+		"cycle":           {docWithFault(cyclicMap("self")), errCyclicValue.Error()},
+		"multi-dim-array": {docWithFault(offPathFaults()["multi-dim-array"]()), "cannot index multi-dimensional array"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := callBuiltin(testEnv(t), BuiltinQueryGet, tc.doc)
+			require.Equal(t, lisp.LError, got.Type, "%v", got)
+			assert.Contains(t, got.String(), tc.want)
+
+			got = callBuiltin(testEnv(t), BuiltinQueryGet, tc.doc, lisp.String("a"))
+			require.NotEqual(t, lisp.LError, got.Type, "%v", got)
+			assert.Equal(t, `(sorted-map "b" 1)`, got.String())
+		})
+	}
+}
+
+// TestQueryGetRangeRefusesGoNilCell extends TestQueryGetRefusesGoNilCell to
+// a range read, which returns the selected cells themselves: a window that
+// includes a Go nil cell must be refused, not returned holding it.
+func TestQueryGetRangeRefusesGoNilCell(t *testing.T) {
+	doc := mapHolding("xs", lisp.Vector([]*lisp.LVal{lisp.Int(1), nil}))
+	rng := lisp.QExpr([]*lisp.LVal{lisp.Symbol("range"), lisp.Int(0), lisp.Int(2)})
+	got := callBuiltin(testEnv(t), BuiltinQueryGet, doc, lisp.String("xs"), rng)
+	require.Equal(t, lisp.LError, got.Type, "%v", got)
+	assert.NotContains(t, got.String(), "panic")
+	assert.Contains(t, got.String(), errNilCell.Error())
+
+	// A window that leaves the nil cell out is an ordinary read.
+	first := lisp.QExpr([]*lisp.LVal{lisp.Symbol("range"), lisp.Int(0), lisp.Int(1)})
+	got = callBuiltin(testEnv(t), BuiltinQueryGet, doc, lisp.String("xs"), first)
+	require.NotEqual(t, lisp.LError, got.Type, "%v", got)
+	assert.Equal(t, "(vector 1)", got.String())
+}
+
+// TestValidateDocumentRefusesGoNilCell pins that the write gate reports a
+// host-built Go nil cell as an error rather than panicking on it.
+func TestValidateDocumentRefusesGoNilCell(t *testing.T) {
+	doc := func() *lisp.LVal { return mapHolding("xs", lisp.Vector([]*lisp.LVal{lisp.Int(1), nil})) }
+	var err error
+	require.NotPanics(t, func() { err = ValidateDocument(doc()) })
+	require.Error(t, err)
+	assert.ErrorIs(t, err, errNilCell)
+
+	got := callBuiltin(testEnv(t), BuiltinQuerySet, doc(), lisp.String("y"), lisp.Int(2))
+	require.Equal(t, lisp.LError, got.Type, "%v", got)
+	assert.NotContains(t, got.String(), "panic")
+	assert.Contains(t, got.String(), errNilCell.Error())
+}
+
+// TestNestedIteratorFailedElementYieldsNil is the regression for #961. Under
+// '* '* an element the inner iterator cannot index yields () at its
+// position, as it does under a single '*, instead of failing the whole read
+// with "first argument is nil".
+func TestNestedIteratorFailedElementYieldsNil(t *testing.T) {
+	for name, tc := range map[string]struct {
+		doc  *lisp.LVal
+		want string
+	}{
+		"leaf-element": {
+			lisp.Vector([]*lisp.LVal{lisp.Int(1), lisp.Vector([]*lisp.LVal{lisp.Int(2)})}),
+			"(vector () 2)",
+		},
+		"multi-dim-element": {
+			lisp.Vector([]*lisp.LVal{lisp.Vector([]*lisp.LVal{lisp.Int(1)}), offPathFaults()["multi-dim-array"]()}),
+			"(vector 1 ())",
+		},
+		// An empty list is nil, which an iterator cannot step into, so it
+		// is a failed element too, as it is under a single '*.
+		"empty-list-element": {
+			lisp.Vector([]*lisp.LVal{lisp.QExpr(nil), lisp.Vector([]*lisp.LVal{lisp.Int(2)})}),
+			"(vector () 2)",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := callBuiltin(testEnv(t), BuiltinQueryGet, tc.doc, lisp.Symbol("*"), lisp.Symbol("*"))
+			require.NotEqual(t, lisp.LError, got.Type, "%v", got)
+			assert.Equal(t, tc.want, got.String())
+		})
+	}
+
+	// A nested iterator can SUCCEED with an empty list: '* '* over a list
+	// whose only element is an empty vector collapses to no results, and a
+	// list of no results is nil. That element contributes nothing, not a ().
+	t.Run("succeeded-empty", func(t *testing.T) {
+		doc := lisp.Vector([]*lisp.LVal{
+			lisp.QExpr([]*lisp.LVal{lisp.Vector(nil)}),
+			lisp.QExpr([]*lisp.LVal{lisp.Vector([]*lisp.LVal{lisp.Int(5)})}),
+		})
+		got := callBuiltin(testEnv(t), BuiltinQueryGet, doc, lisp.Symbol("*"), lisp.Symbol("*"), lisp.Symbol("*"))
+		require.NotEqual(t, lisp.LError, got.Type, "%v", got)
+		assert.Equal(t, "(vector 5)", got.String())
+	})
+}
