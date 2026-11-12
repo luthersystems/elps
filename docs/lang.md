@@ -594,6 +594,24 @@ code:
 - `defun` and `defmacro` are kept as written with their bodies expanded;
   their own expansion embeds a compiled function rather than source.
 
+`(macroexpand-all form :lower true)` also expands `get-default` as the macro
+it replaced expanded it. Today `get-default` is the only special operator with
+such a lowering; other operators, such as `when`, stay as they are. A tool
+that compiles ELPS code and models the macro's expansion (a `let` and an
+`if`), and not the newer operator, asks for this form. The lowered code
+evaluates to the same value. Quoted data and local shadowing work as above.
+`(macroexpand-all-lowered form)` is the same call with one argument, for an
+embedder that counts evaluation steps and must not pay for the two extra
+arguments.
+
+```lisp
+(macroexpand-all '(get-default m "k" 0) :lower true)
+; '(lisp:let ((map@1@1 m) (key@1@2 "k"))
+;    (lisp:if (lisp:if (lisp:nil? map@1@1) lisp:false (lisp:key? map@1@1 key@1@2))
+;             (lisp:get map@1@1 key@1@2)
+;             0))
+```
+
 The input form is never modified. The result evaluates to the same value as
 the input. Code that shares structure is walked once per shared node, and each
 list walked costs one step, so a step budget or deadline bounds the walk. Like `macroexpand`, it runs macros (which may call `gensym`), so it

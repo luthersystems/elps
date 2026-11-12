@@ -132,7 +132,7 @@ var (
 			`Performs a single macro expansion step on quoted-form and returns
 			the result. Useful for debugging macro expansion. Recursive
 			value walks exceeding 1000000 levels raise an ordinary depth error.`},
-		{"macroexpand-all", Formals("quoted-form"), builtinMacroExpandAll,
+		{"macroexpand-all", Formals("quoted-form", KeyArgSymbol, "lower"), builtinMacroExpandAll,
 			`Expands every macro call in quoted-form, not just the head: the
 			head is expanded until it is no longer a macro, then each nested
 			form in code position is expanded the same way. Knows the binding
@@ -142,7 +142,15 @@ var (
 			condition types) is never entered. defun and defmacro are kept as
 			written with their bodies expanded. The input is not modified.
 			Nesting deeper than the evaluator's nesting limit, or a head that
-			keeps expanding past the macro expansion limit, is an error.`},
+			keeps expanding past the macro expansion limit, is an error.
+			With :lower true, get-default (today the only special operator
+			with a lowering) is expanded as the macro it replaced expanded
+			it, for tools that model the macro's expansion and not the
+			operator.`},
+		{"macroexpand-all-lowered", Formals("quoted-form"), builtinMacroExpandAllLowered,
+			`Is (macroexpand-all quoted-form :lower true) with one argument, so
+			a caller that counts evaluation steps pays the same as for
+			macroexpand-all without :lower.`},
 		{"builtin", Formals("name"), builtinRegisteredBuiltin,
 			`Returns the builtin registered as name, a quoted qualified symbol
 			such as 'math:floor, whatever that name is bound to now.

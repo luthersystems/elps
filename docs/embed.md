@@ -2565,6 +2565,9 @@ Two entry points share one walker:
   to local macros are not entered.
 - `(*lisp.LEnv).MacroExpandAll(form)` resolves heads in a live environment and
   expands `macrolet` macros too. It is what `macroexpand-all` calls.
+  `(*lisp.LEnv).MacroExpandAllLowered(form)` also expands each special
+  operator that has a lowering (`lisp.HasLowering`), as `macroexpand-all
+  :lower true` does. A `CodeWalker` gets the same with its `Lower` field.
 
 None of them writes to the input. A list on the path to an expansion is
 rebuilt as a fresh, unsealed list carrying the original's source location;

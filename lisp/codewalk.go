@@ -296,6 +296,12 @@ type CodeWalker struct {
 	// it; macroexpand-all does not.
 	KeepGoing bool
 
+	// Lower expands each special operator of package lisp that has a
+	// lowering (HasLowering) into that lowering, as if it were a macro.
+	// It is for tools that model the forms macros expanded to and not the
+	// special operators that replaced those macros.
+	Lower bool
+
 	// Source policy is available only through internal/codewalk's adapter.
 	sourceAnalysis         bool
 	packageScan            bool
@@ -576,7 +582,7 @@ func (w *CodeWalker) compound(v *LVal, depth int) *LVal {
 		// A static form-only visitor needs lexical lookup only for a head
 		// that could be a special form. Local macros still require the
 		// general path: an unexpandable macrolet call is opaque.
-		if w.formsOnly && w.SpecialOp == nil && w.Expand1 == nil && !w.hasLocalMacros() {
+		if w.formsOnly && w.SpecialOp == nil && w.Expand1 == nil && !w.Lower && !w.hasLocalMacros() {
 			op, isOp = defaultSpecialOpName(head)
 			if isOp && w.isBound(head) {
 				op, isOp = "", false
@@ -603,21 +609,50 @@ func (w *CodeWalker) compound(v *LVal, depth int) *LVal {
 					return v
 				}
 			} else {
-				if op, isOp = w.specialOp(head); isOp || w.Expand1 == nil {
-					break
-				}
-				// Only Expand1 knows whether the head is a macro, so the
-				// limit is checked once it has expanded: a chain of exactly
-				// MaxExpansions expansions ending in a function call is fine.
-				var ok bool
-				if exp, ok = w.Expand1(v); !ok {
-					break
-				}
-				if n >= w.maxExpansions() {
-					return w.expansionFailed(v, depth, Errorf("macro expansion depth exceeds maximum: %d", w.maxExpansions()))
-				}
-				if exp == nil {
-					exp = Nil()
+				op, isOp = w.specialOp(head)
+				if isOp {
+					lower := w.lowering(op)
+					if lower == nil {
+						break
+					}
+					if n >= w.maxExpansions() {
+						return w.expansionFailed(v, depth, Errorf("macro expansion depth exceeds maximum: %d", w.maxExpansions()))
+					}
+					// The lowering reads the arguments and does not keep
+					// the slice, so it may share v's cells.
+					exp = lower(SExpr(v.Cells[1:]))
+					if exp.IsError() {
+						if !w.KeepGoing {
+							return w.fail(exp)
+						}
+						// A malformed form stays the special operator,
+						// as it is without Lower.
+						break
+					}
+					// Like a Go macro's, the expansion is fresh nodes
+					// and the arguments: locate the fresh nodes at the
+					// form, so an error in the lowered code points at
+					// the get-default call, not at an argument.
+					locateExpansionTree(exp, v.loc(), v.Cells[1:])
+					op, isOp = "", false
+				} else {
+					if w.Expand1 == nil {
+						break
+					}
+					// Only Expand1 knows whether the head is a macro, so
+					// the limit is checked once it has expanded: a chain of
+					// exactly MaxExpansions expansions ending in a function
+					// call is fine.
+					var ok bool
+					if exp, ok = w.Expand1(v); !ok {
+						break
+					}
+					if n >= w.maxExpansions() {
+						return w.expansionFailed(v, depth, Errorf("macro expansion depth exceeds maximum: %d", w.maxExpansions()))
+					}
+					if exp == nil {
+						exp = Nil()
+					}
 				}
 			}
 		}
@@ -657,6 +692,16 @@ func (w *CodeWalker) expansionFailed(v *LVal, depth int, err *LVal) *LVal {
 		return v
 	}
 	return w.call(v, depth)
+}
+
+// lowering returns the lowering of the special operator op, or nil when the
+// walk does not lower or op has none.  op is a builtin form name, so an
+// operator another package registered (qualified, no kind) has none.
+func (w *CodeWalker) lowering(op string) func(*LVal) *LVal {
+	if !w.Lower {
+		return nil
+	}
+	return specialOpLowerings[op]
 }
 
 func (w *CodeWalker) specialOp(head *LVal) (string, bool) {
@@ -1538,6 +1583,17 @@ func rebuiltList(orig *LVal, cells []*LVal) *LVal {
 // form is not modified: see CodeWalker for what the result shares with it.
 // A failed expansion returns the LError.
 func (env *LEnv) MacroExpandAll(form *LVal) *LVal {
+	return env.macroExpandAll(form, false)
+}
+
+// MacroExpandAllLowered is MacroExpandAll that also expands each special
+// operator with a lowering (HasLowering) into it, as CodeWalker.Lower does:
+// the result holds the forms the replaced macros expanded to.
+func (env *LEnv) MacroExpandAllLowered(form *LVal) *LVal {
+	return env.macroExpandAll(form, true)
+}
+
+func (env *LEnv) macroExpandAll(form *LVal, lower bool) *LVal {
 	maxDepth := env.Runtime.MaxEvalNestingDepth()
 	if maxDepth == 0 { // the embedder disabled the nesting limit
 		maxDepth = math.MaxInt
@@ -1548,6 +1604,7 @@ func (env *LEnv) MacroExpandAll(form *LVal) *LVal {
 		env:           env,
 		MaxDepth:      maxDepth,
 		MaxExpansions: env.Runtime.MaxMacroExpansions(),
+		Lower:         lower,
 		step:          func() *LVal { return env.checkLimits(env.evalCtx) },
 	}
 	return w.Walk(form)
@@ -1649,7 +1706,20 @@ func (w *CodeWalker) macroEnv() *LEnv {
 }
 
 func builtinMacroExpandAll(env *LEnv, args *LVal) *LVal {
-	form := args.Cells[0]
+	return macroExpandAllArg(env, args.ReqArg(env, 0), True(args.KeyArg(1)))
+}
+
+// builtinMacroExpandAllLowered is (macroexpand-all form :lower true) with
+// one argument.  Why: an embedder that charges evaluation steps (substrate's
+// defflow) would pay two more steps per call for the :lower true argument.
+func builtinMacroExpandAllLowered(env *LEnv, args *LVal) *LVal {
+	return macroExpandAllArg(env, args.ReqArg(env, 0), true)
+}
+
+func macroExpandAllArg(env *LEnv, form *LVal, lower bool) *LVal {
+	if form.IsError() {
+		return form
+	}
 	if form.Type != LSExpr {
 		return env.Errorf("first argument is not a list: %v", form.Type)
 	}
@@ -1663,7 +1733,7 @@ func builtinMacroExpandAll(env *LEnv, args *LVal) *LVal {
 	if form.quoted {
 		code = shallowUnquote(form)
 	}
-	r := env.MacroExpandAll(code)
+	r := env.macroExpandAll(code, lower)
 	if r.IsError() {
 		return r
 	}
