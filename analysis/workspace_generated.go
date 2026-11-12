@@ -49,13 +49,28 @@ func (g *generatedDefs) empty() bool {
 // that have one: most files of a phylum hold only defun and set forms, and
 // an editor computes the definitions again on each save that loads a
 // macro.
+//
+// It runs on each scan of a file, so a file with no progn costs no
+// allocation: expansionPackageForms is called only for a progn body (the
+// declarations that it adds for a form nested in a top-level form are
+// package forms, so they never count).
 func hasMacroCandidates(exprs []*lisp.LVal) bool {
-	for _, form := range expansionPackageForms(exprs) {
+	for _, form := range exprs {
 		head := astutil.HeadSymbol(form)
 		if head == "" || form.IsQuoted() {
 			continue
 		}
-		if !isPackageFormHead(strings.TrimPrefix(head, "lisp:")) {
+		head = strings.TrimPrefix(head, "lisp:")
+		if head == "progn" {
+			for _, inner := range expansionPackageForms(form.Cells[1:]) {
+				h := astutil.HeadSymbol(inner)
+				if h != "" && !inner.IsQuoted() && !isPackageFormHead(strings.TrimPrefix(h, "lisp:")) {
+					return true
+				}
+			}
+			continue
+		}
+		if !isPackageFormHead(head) {
 			return true
 		}
 	}
