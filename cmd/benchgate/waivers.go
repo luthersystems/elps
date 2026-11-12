@@ -51,6 +51,10 @@ var (
 	issueURLRe = regexp.MustCompile(`^https://github\.com/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/(issues|pull)/[0-9]+$`)
 	fieldSplit = regexp.MustCompile(`[ \t,]+`)
 	commentRe  = regexp.MustCompile(`^[ \t]*(#|$)`)
+	// directiveRe is any directive line; procsDirectiveRe is the one
+	// directive, @gomaxprocs N (parseWaivers).
+	directiveRe      = regexp.MustCompile(`^[ \t]*@`)
+	procsDirectiveRe = regexp.MustCompile(`^[ \t]*@gomaxprocs[ \t]+([^ \t]+)[ \t]*$`)
 )
 
 // issuesOK accepts one or more tracking references, space separated:
@@ -88,12 +92,45 @@ func parseWaivers(source, content, today string, procs procsRule) *waiverSet {
 	}
 
 	lines := strings.Split(content, "\n")
+	// check is the rule the waiver's benchmark field is checked against.  A
+	// file may declare the GOMAXPROCS its names are written for
+	// (@gomaxprocs N).  Why: at the legacy default (procs unknown) any
+	// trailing -<digits> reads as the suffix, so a benchmark whose own name
+	// ends in a number (Case/uppercase/ascii-mixed-16, elps#958) could not be
+	// waived at all, although the gated job runs at GOMAXPROCS=1, where that
+	// name is exact.  Row binding (ws.procs) is NOT changed: an unstated run
+	// may have any core count, and only the legacy rule strips its suffix.
+	check := procs
+	directive := map[int]bool{}
+	for i, raw := range lines {
+		wl := strings.TrimSuffix(raw, "\r")
+		if !directiveRe.MatchString(wl) {
+			continue
+		}
+		directive[i] = true
+		m := procsDirectiveRe.FindStringSubmatch(wl)
+		if m == nil {
+			report(i+1, fmt.Sprintf("%q is not a directive; the only one is \"@gomaxprocs N\", alone on its line", strings.TrimSpace(wl)))
+			continue
+		}
+		n, err := strconv.Atoi(m[1])
+		switch {
+		case len(directive) > 1:
+			report(i+1, "a second directive line; a file declares @gomaxprocs once")
+		case err != nil || n < 1:
+			report(i+1, fmt.Sprintf("@gomaxprocs %s is not a GOMAXPROCS of 1 or more", m[1]))
+		case procs.n != 0 && procs.n != n:
+			report(i+1, fmt.Sprintf("the file is written for GOMAXPROCS=%d but the arms ran at %d; its benchmark names would not bind", n, procs.n))
+		default:
+			check = procsRule{n: n}
+		}
+	}
 	// A trailing newline yields a final empty element; it is a comment/blank
 	// by the rule below, so it needs no special case.
 	for i, raw := range lines {
 		lineno := i + 1
 		wl := strings.TrimSuffix(raw, "\r")
-		if commentRe.MatchString(wl) {
+		if commentRe.MatchString(wl) || directive[i] {
 			continue
 		}
 
@@ -115,8 +152,8 @@ func parseWaivers(source, content, today string, procs procsRule) *waiverSet {
 		case wf[1] == "":
 			report(lineno, "empty benchmark field; a waiver must name the benchmark it covers")
 			bad = true
-		case procs.suffixed(wf[1]):
-			report(lineno, fmt.Sprintf("benchmark %s carries a -<GOMAXPROCS> suffix; write it as %s so the waiver does not unbind when the runner changes", wf[1], procs.strip(wf[1])))
+		case check.suffixed(wf[1]):
+			report(lineno, fmt.Sprintf("benchmark %s carries a -<GOMAXPROCS> suffix; write it as %s so the waiver does not unbind when the runner changes", wf[1], check.strip(wf[1])))
 			bad = true
 		}
 		if wf[2] == "" {
