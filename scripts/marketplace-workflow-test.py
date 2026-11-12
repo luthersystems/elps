@@ -26,6 +26,8 @@ def validate(doc):
         assert jobs[name]["if"] == TAG_ONLY
         assert jobs[name]["runs-on"] == "ubuntu-24.04-arm"
         assert "concurrency" not in jobs[name]
+    # Every job defaults to read-only GITHUB_TOKEN; publishing uses VSCE_PAT.
+    assert doc.get("permissions") == {"contents": "read"}
     assert "env" not in doc
     assert "concurrency" not in doc
     validate_tag_on_main(jobs)
@@ -92,6 +94,15 @@ class PublicationIsolation(unittest.TestCase):
             with self.subTest(field=field):
                 changed = copy.deepcopy(doc)
                 changed["jobs"]["diagnose-marketplace"][field] = value
+                with self.assertRaises(AssertionError):
+                    validate(changed)
+        for value in (None, {"contents": "write"}, "write-all"):
+            with self.subTest(workflow_permissions=value):
+                changed = copy.deepcopy(doc)
+                if value is None:
+                    del changed["permissions"]
+                else:
+                    changed["permissions"] = value
                 with self.assertRaises(AssertionError):
                     validate(changed)
         # The publish must stay behind the tag-on-main ancestry gate.

@@ -28,6 +28,12 @@ on:
 # JSON ENGINE. The jobs run on Go's default JSON engine (v2 on Go 1.27).
 # The json-v1 job runs the tests on the v1 engine (GOEXPERIMENT=nojsonv2).
 
+# Least privilege (code scanning: actions/missing-workflow-permissions). Every
+# job here only reads the repository; a job that needs more sets its own
+# `permissions:`.
+permissions:
+  contents: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true

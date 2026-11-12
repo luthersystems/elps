@@ -7,6 +7,12 @@ on:
     tags:
       - "v*"
 
+# Least privilege (code scanning: actions/missing-workflow-permissions). No job
+# writes to GitHub: artifacts pass through the run's own storage and the
+# Marketplace publish authenticates with VSCE_PAT, not GITHUB_TOKEN.
+permissions:
+  contents: read
+
 jobs:
   diagnose-marketplace:
     name: Diagnose Marketplace (ARM)
