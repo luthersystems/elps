@@ -6,6 +6,8 @@
 package lsp
 
 import (
+	"context"
+	"errors"
 	"io"
 	"os"
 	"reflect"
@@ -48,6 +50,32 @@ type Server struct {
 	wsScanCfg     *analysis.Config
 	stdlibExports map[string][]analysis.ExternalSymbol
 	indexOnce     sync.Once
+	// macroExpander is the expander of the analysis config, with the
+	// macros of the workspace loaded in s.env. Guarded by analysisCfgMu.
+	// macroReloadMu serializes the saves that swap the workspace scan and
+	// reload the macros of the saved file, so the env takes the reloads
+	// in the order of the scans (see reloadFileMacros). It is taken
+	// before analysisCfgMu.
+	macroExpander *analysis.EnvMacroExpander
+	macroReloadMu sync.Mutex
+	// globalIndex is the GlobalIndex of globalIndexOf, the ExtraGlobals
+	// of the last config an analysis ran with (see withGlobalIndex).
+	// Both are guarded by globalIndexMu.
+	globalIndex   *analysis.GlobalIndex
+	globalIndexOf []analysis.ExternalSymbol
+	globalIndexMu sync.Mutex
+	// macroBase maps the name of each file whose macros in the env do not
+	// follow the stored scan to the scan they do follow, or to nil when
+	// none of them loaded. A reload that stopped at a limit keeps the old
+	// macros, and the index build skips the files after its deadline. The
+	// next save compares the file with this scan, not with the stored
+	// one, so it loads the file again even when the text is the same.
+	// Guarded by macroReloadMu.
+	macroBase map[string]*analysis.WorkspaceScan
+	// macroBuildTimeout and macroReloadTimeout bound the loads of the
+	// preamble (see reloadFileMacros). Tests shorten them.
+	macroBuildTimeout  time.Duration
+	macroReloadTimeout time.Duration
 
 	// posEncoding holds the positionEncoding negotiated during initialize
 	// (elps#464). Zero -- the value before any handshake -- is encodingUTF16,
@@ -164,6 +192,9 @@ func New(opts ...Option) *Server {
 		linter:   &lint.Linter{Analyzers: lint.DefaultAnalyzers()},
 		debounce: make(map[string]*time.Timer),
 		exitFn:   os.Exit,
+
+		macroBuildTimeout:  analysis.PreambleLoadTimeout,
+		macroReloadTimeout: defaultMacroReloadTimeout,
 	}
 	for _, o := range opts {
 		o(s)
@@ -404,24 +435,37 @@ func (s *Server) buildWorkspaceIndex() {
 	setWorkspaceTables(cfg, prescan, stdlib)
 
 	// Enable macro expansion at analysis time if an environment is available.
-	// Load workspace-defined macros into the env so the expander can find them.
+	// Load workspace-defined macros into the env so the expander can find
+	// them. A save loads the macros of the saved file again
+	// (reloadFileMacros). The load is bounded like a reload: each form
+	// has a step budget and the whole load a deadline, because every
+	// request waits for the build (ensureWorkspaceIndex).
+	//
+	// After the deadline no later form runs. The files of those forms
+	// are named in a warning and load at their next save (macroBase).
+	var exp *analysis.EnvMacroExpander
+	var skipped []string
 	if s.env != nil {
-		if errs := analysis.LoadWorkspaceMacros(s.env, preamble); len(errs) > 0 {
-			for _, err := range errs {
-				s.sendNotification("window/logMessage", &protocol.LogMessageParams{
-					Type:    protocol.MessageTypeWarning,
-					Message: err.Error(),
-				})
-			}
+		exp = &analysis.EnvMacroExpander{Env: s.env}
+		ctx, cancel := context.WithTimeout(context.Background(), s.macroBuildTimeout)
+		load := exp.LoadWorkspaceMacrosContext(ctx, preamble)
+		cancel()
+		for _, err := range load.Errors {
+			s.logWarning(err.Error())
 		}
-		cfg.MacroExpander = &analysis.EnvMacroExpander{Env: s.env}
+		if load.Unfinished < len(preamble) {
+			skipped = scan.PreambleFilesFrom(load.Unfinished)
+			s.logWarning("macro load stopped at its deadline; these files load their macros at their next save: " +
+				strings.Join(skipped, ", "))
+		}
+		cfg.MacroExpander = exp
 	}
 
 	// Build workspace reference index using the populated config.
 	// Set it on the config so per-file analysis (and lint analyzers)
 	// can check cross-file references.
 	if s.rootPath != "" {
-		wsRefs := analysis.ScanWorkspaceRefs(s.rootPath, cfg, scanCfg)
+		wsRefs := analysis.ScanWorkspaceRefs(s.rootPath, s.withGlobalIndex(cfg), scanCfg)
 		cfg.WorkspaceRefs = wsRefs
 		s.workspaceRefsMu.Lock()
 		s.workspaceRefs = wsRefs
@@ -429,10 +473,25 @@ func (s *Server) buildWorkspaceIndex() {
 		s.workspaceRefsMu.Unlock()
 	}
 
+	s.macroReloadMu.Lock()
+	s.macroBase = nil
+	for _, name := range skipped {
+		s.markMacrosBehind(name, nil)
+	}
 	s.analysisCfgMu.Lock()
 	s.analysisCfg = cfg
 	s.wsScan, s.wsScanCfg, s.stdlibExports = scan, cfg, stdlib
+	s.macroExpander = exp
 	s.analysisCfgMu.Unlock()
+	s.macroReloadMu.Unlock()
+}
+
+// logWarning sends a warning to the log of the client.
+func (s *Server) logWarning(msg string) {
+	s.sendNotification("window/logMessage", &protocol.LogMessageParams{
+		Type:    protocol.MessageTypeWarning,
+		Message: msg,
+	})
 }
 
 // setWorkspaceTables sets the workspace tables of cfg from the merged
@@ -534,7 +593,49 @@ func (s *Server) getAnalysisConfig(uri string) *analysis.Config {
 	base := s.analysisCfg
 	s.analysisCfgMu.RUnlock()
 
-	return analysis.ConfigForFile(base, uriToPath(uri))
+	cfg := analysis.ConfigForFile(base, uriToPath(uri))
+	cfg.GlobalIndex = s.globalIndexFor(cfg.ExtraGlobals)
+	return cfg
+}
+
+// withGlobalIndex returns a copy of cfg whose GlobalIndex indexes its
+// ExtraGlobals, for an analysis. It never writes cfg: a request may be
+// reading it.
+func (s *Server) withGlobalIndex(cfg *analysis.Config) *analysis.Config {
+	if cfg == nil {
+		return nil
+	}
+	next := *cfg
+	next.GlobalIndex = s.globalIndexFor(next.ExtraGlobals)
+	return &next
+}
+
+// globalIndexFor returns the GlobalIndex of globals, the ExtraGlobals of
+// a config. It builds the index on the first analysis that asks for it
+// and gives the same one to every later analysis until ExtraGlobals
+// changes.
+//
+// The configs do not carry the index. A save replaces ExtraGlobals, and
+// an index stored with the new config would cost each save time and
+// memory in proportion to all the globals of the workspace, where the
+// rest of the save costs about the size of the saved file
+// (BenchmarkSaveDefinitions; luthersystems/elps#944). Built here, a
+// save costs nothing for it, and a run of analyses after the save, the
+// open documents and the references of the saved file, builds it once.
+func (s *Server) globalIndexFor(globals []analysis.ExternalSymbol) *analysis.GlobalIndex {
+	if len(globals) == 0 {
+		return nil
+	}
+	s.globalIndexMu.Lock()
+	defer s.globalIndexMu.Unlock()
+	// A save makes a new ExtraGlobals slice, so the first element tells
+	// one slice from another.
+	same := len(s.globalIndexOf) == len(globals) && &s.globalIndexOf[0] == &globals[0]
+	if !same {
+		s.globalIndex = analysis.NewGlobalIndex(globals)
+		s.globalIndexOf = globals
+	}
+	return s.globalIndex
 }
 
 // docView is the state of a document that one request works from: the
@@ -682,6 +783,7 @@ func (s *Server) crossFileRefs(sym *analysis.Symbol, docURI protocol.DocumentUri
 	s.analysisCfgMu.RLock()
 	cfg := s.analysisCfg
 	s.analysisCfgMu.RUnlock()
+	cfg = s.withGlobalIndex(cfg)
 	for _, ref := range analysis.ExtractFileRefs(analysis.AnalyzeFile(source, defPath, cfg), defPath) {
 		if ref.Export && ref.SymbolKey.String() == key {
 			refs = append(refs, ref)
@@ -821,6 +923,9 @@ func (s *Server) updateFileRefs(uri string) {
 	s.analysisCfgMu.RLock()
 	cfg := s.analysisCfg
 	s.analysisCfgMu.RUnlock()
+	// After the unlock: the first analysis after a save builds the index,
+	// and a save must not wait for that.
+	cfg = s.withGlobalIndex(cfg)
 
 	result := analysis.AnalyzeFile(source, filePath, cfg)
 	if result == nil {
@@ -900,15 +1005,24 @@ func sameMap(a, b map[string][]analysis.FileReference) bool {
 // file adds to the workspace tables of the analysis config. It reports
 // whether the record methods the file adds changed.
 func (s *Server) updateFileDefinitions(uri string) bool {
-	recordsChanged, _ := s.updateFileIndex(uri)
-	return recordsChanged
+	return s.updateFileIndex(uri).records
+}
+
+// indexUpdate is what a save or a removal of one file changed.
+type indexUpdate struct {
+	// records: the record methods the file adds.
+	records bool
+	// tables: what the file gives to the workspace tables, the positions
+	// of its definitions aside.
+	tables bool
+	// macros: the preamble of the file, so its macros were loaded again
+	// into the env of the macro expander.
+	macros bool
 }
 
 // updateFileIndex scans a single file again and merges the workspace
 // tables of the analysis config again with the new scan of the file. It
-// reports whether the record methods the file adds changed, and whether
-// anything the file gives to the tables changed (the positions of its
-// definitions aside).
+// reports what changed (see indexUpdate).
 //
 // All the tables follow the save, not only ExtraGlobals. The analysis of
 // another file resolves a use-package import through PackageExports, so
@@ -923,9 +1037,12 @@ func (s *Server) updateFileDefinitions(uri string) bool {
 // removes goes away, and an entry that lost a tie to an entry of the
 // saved file comes back when that entry goes.
 //
-// Not refreshed: the macros loaded in the environment of the macro
-// expander. They are loaded one time, at the index build.
-func (s *Server) updateFileIndex(uri string) (bool, bool) {
+// The macros that the index build loaded into the env of the macro
+// expander follow the save too (luthersystems/elps#949). Without that,
+// every analysis expands the macro as it was when the server started:
+// a macro whose expansion defines another name leaves the uses of the
+// new name unresolved. See reloadFileMacros.
+func (s *Server) updateFileIndex(uri string) indexUpdate {
 	filePath := analysis.NormalizePath(uriToPath(uri))
 	source, status := s.readWorkspaceFile(filePath)
 	switch status {
@@ -935,19 +1052,25 @@ func (s *Server) updateFileIndex(uri string) (bool, bool) {
 		// would now skip.
 		return s.removeFileIndex(filePath)
 	default:
-		return false, false
+		return indexUpdate{}
 	}
 
+	s.macroReloadMu.Lock()
+	defer s.macroReloadMu.Unlock()
 	s.analysisCfgMu.Lock()
 	if s.analysisCfg == nil {
 		s.analysisCfgMu.Unlock()
-		return false, false
+		return indexUpdate{}
 	}
 	if s.hasWorkspaceScan() {
-		defer s.analysisCfgMu.Unlock()
-		scan, changed := s.wsScan.WithFile(filePath, source)
+		old := s.wsScan
+		scan, changed := old.WithFile(filePath, source)
 		name, _ := scan.Path(filePath)
-		return s.storeWorkspaceScan(scan, name), changed
+		up := indexUpdate{records: s.storeWorkspaceScan(scan, name), tables: changed}
+		exp := s.macroExpander
+		s.analysisCfgMu.Unlock()
+		up.macros = s.reloadFileMacros(exp, old, scan, name)
+		return up
 	}
 	cfg := s.analysisCfg
 	s.analysisCfgMu.Unlock()
@@ -956,29 +1079,100 @@ func (s *Server) updateFileIndex(uri string) (bool, bool) {
 	// and addPackageImports describe.
 	// DefaultPackage and FilePackages are set once, so the scan can read
 	// them from a config that a later save replaces.
-	return s.replaceFileIndex(filePath, analysis.IndexFile(source, filePath, cfg)), false
+	return indexUpdate{records: s.replaceFileIndex(filePath, analysis.IndexFile(source, filePath, cfg))}
+}
+
+// defaultMacroReloadTimeout bounds the time a save spends loading the
+// preamble of one file, as analysis.PreambleLoadTimeout bounds the index
+// build. Every expansion waits for a reload.
+const defaultMacroReloadTimeout = analysis.PreambleReloadTimeout
+
+// markMacrosBehind records that the macros of the file name in the env
+// follow the scan base, not the stored scan (see macroBase). The caller
+// holds macroReloadMu.
+func (s *Server) markMacrosBehind(name string, base *analysis.WorkspaceScan) {
+	if s.macroBase == nil {
+		s.macroBase = make(map[string]*analysis.WorkspaceScan)
+	}
+	s.macroBase[name] = base
+}
+
+// reloadFileMacros loads the macros of the file name again into the env
+// of exp, when the preamble of the file differs between the scans old
+// and next. It reports whether it did.
+//
+// The caller holds macroReloadMu and not analysisCfgMu. The reload
+// evaluates Lisp and waits for the expansions that run, and a request
+// that waits for analysisCfgMu meanwhile would stall behind it.
+//
+// A save whose preamble is the same (most saves: a change inside a
+// function body) compares the forms of one file and evaluates nothing,
+// so the cost of a save still follows the size of the saved file
+// (luthersystems/elps#944).
+//
+// The reload has a step budget for each form and the deadline
+// macroReloadTimeout. A form that stops at a limit leaves the macros of
+// the file as they were, and the warning names the form. The file is
+// then marked in macroBase, so its next save loads it again even with
+// the same text; old is replaced by the scan that the macros of the file
+// follow when the file is marked.
+//
+// The workspace reference index of the other files is not scanned
+// again. A reference that only a macro expansion makes is updated when
+// its own file is saved, or at the next index build.
+func (s *Server) reloadFileMacros(exp *analysis.EnvMacroExpander, old, next *analysis.WorkspaceScan, name string) bool {
+	if exp == nil {
+		return false
+	}
+	base, behind := s.macroBase[name]
+	if behind {
+		old = base
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), s.macroReloadTimeout)
+	defer cancel()
+	reloaded, errs := exp.ReloadFileMacros(ctx, old, next, name)
+	stopped := false
+	for _, err := range errs {
+		s.logWarning(err.Error())
+		stopped = stopped || errors.Is(err, analysis.ErrPreambleLimit)
+	}
+	switch {
+	case stopped && !behind:
+		s.markMacrosBehind(name, old)
+	case !stopped && behind:
+		delete(s.macroBase, name)
+	}
+	return reloaded
 }
 
 // removeFileIndex removes what the file at filePath adds to the workspace
 // tables of the analysis config. Its results are those of
 // updateFileIndex.
-func (s *Server) removeFileIndex(filePath string) (bool, bool) {
+func (s *Server) removeFileIndex(filePath string) indexUpdate {
+	s.macroReloadMu.Lock()
+	defer s.macroReloadMu.Unlock()
 	s.analysisCfgMu.Lock()
 	if s.analysisCfg == nil {
 		s.analysisCfgMu.Unlock()
-		return false, false
+		return indexUpdate{}
 	}
 	if s.hasWorkspaceScan() {
-		defer s.analysisCfgMu.Unlock()
-		name, held := s.wsScan.Path(filePath)
+		old := s.wsScan
+		name, held := old.Path(filePath)
 		if !held {
-			return false, false
+			s.analysisCfgMu.Unlock()
+			return indexUpdate{}
 		}
-		scan, _ := s.wsScan.WithoutFile(filePath)
-		return s.storeWorkspaceScan(scan, name), true
+		scan, _ := old.WithoutFile(filePath)
+		up := indexUpdate{records: s.storeWorkspaceScan(scan, name), tables: true}
+		exp := s.macroExpander
+		s.analysisCfgMu.Unlock()
+		// The macros of a removed file go away, as at the next index build.
+		up.macros = s.reloadFileMacros(exp, old, scan, name)
+		return up
 	}
 	s.analysisCfgMu.Unlock()
-	return s.replaceFileIndex(analysis.NormalizePath(filePath), &analysis.FileIndex{}), false
+	return indexUpdate{records: s.replaceFileIndex(analysis.NormalizePath(filePath), &analysis.FileIndex{})}
 }
 
 // replaceFileIndex replaces the entries of filePath (a normalized path)
@@ -1129,8 +1323,7 @@ func setFileRecordMethods(cfg *analysis.Config, filePath string, methods analysi
 // the workspace tables of the analysis config (see updateFileDefinitions).
 // It reports whether the file had record methods.
 func (s *Server) removeFileDefinitions(filePath string) bool {
-	recordsChanged, _ := s.removeFileIndex(filePath)
-	return recordsChanged
+	return s.removeFileIndex(filePath).records
 }
 
 // recordReanalyzeDelay is how long a change of a file's record methods

@@ -2,7 +2,11 @@
 
 package analysis
 
-import "github.com/luthersystems/elps/lisp"
+import (
+	"strings"
+
+	"github.com/luthersystems/elps/lisp"
+)
 
 // ScopeKind classifies the kind of scope.
 type ScopeKind int
@@ -48,6 +52,13 @@ type Scope struct {
 	PackageImports map[string]map[string]*Symbol
 	bareNameIndex  map[string]*Symbol // bare name → an arbitrary PackageSymbols entry for O(1) existence checks. When multiple packages define the same bare name, one wins non-deterministically.
 	Node           *lisp.LVal         // the AST node that introduced this scope
+	// globals is set on a root scope built with Config.GlobalIndex: the
+	// package-qualified workspace globals are then found in the index,
+	// not in PackageSymbols and bareNameIndex. Every lookup method reads
+	// it after the maps, so a definition of the file still hides a
+	// global, as it does when the global is in the maps. Code that ranges
+	// over the maps sees only the globals the file has looked up.
+	globals *scopeGlobals
 }
 
 // NewScope creates a new scope of the given kind with the given parent.
@@ -136,7 +147,22 @@ func (s *Scope) LookupLocal(name string) *Symbol {
 // given bare name, regardless of package. This ensures callers that don't
 // know or specify a package can still find symbols defined in non-user packages.
 func (s *Scope) lookupAnyPackageSymbol(name string) *Symbol {
-	return s.bareNameIndex[name]
+	if sym := s.bareNameIndex[name]; sym != nil {
+		return sym
+	}
+	return s.globals.byBare(s, name)
+}
+
+// packageSymbol returns the PackageSymbols entry for key ("pkg:name"),
+// or the workspace global with that key.
+func (s *Scope) packageSymbol(key string) (*Symbol, bool) {
+	if sym, ok := s.PackageSymbols[key]; ok {
+		return sym, true
+	}
+	if sym := s.globals.byKey(s, key); sym != nil {
+		return sym, true
+	}
+	return nil, false
 }
 
 // LookupAllLocal returns all symbols matching a bare name in this scope,
@@ -148,6 +174,20 @@ func (s *Scope) LookupAllLocal(name string) []*Symbol {
 	if sym, ok := s.Symbols[name]; ok && sym != nil {
 		seen[sym] = true
 		out = append(out, sym)
+	}
+	if s.globals != nil {
+		// A global whose key PackageSymbols also holds is hidden by
+		// that entry, which the loop below adds.
+		for _, i := range s.globals.index.keysByBare[name] {
+			g := &s.globals.index.globals[i]
+			if _, hidden := s.PackageSymbols[g.Package+":"+g.Name]; hidden {
+				continue
+			}
+			if sym := s.globals.lookup(s, i); !seen[sym] {
+				seen[sym] = true
+				out = append(out, sym)
+			}
+		}
 	}
 	// Check bareNameIndex first: if no package has this bare name, skip the scan.
 	if s.bareNameIndex[name] == nil {
@@ -166,6 +206,34 @@ func (s *Scope) LookupAllLocal(name string) []*Symbol {
 	return out
 }
 
+// EachPackageSymbol calls fn for each package-qualified symbol of pkg in
+// this scope, in no fixed order, until fn returns false: the entries of
+// PackageSymbols whose key starts with pkg+":" and, in a root scope built
+// with Config.GlobalIndex, the workspace globals of pkg that no entry
+// hides. Use it, not a range over PackageSymbols, to list what a package
+// defines: with an index, PackageSymbols holds only the globals the file
+// looked up.
+func (s *Scope) EachPackageSymbol(pkg string, fn func(key string, sym *Symbol) bool) {
+	prefix := pkg + ":"
+	for key, sym := range s.PackageSymbols {
+		if strings.HasPrefix(key, prefix) && !fn(key, sym) {
+			return
+		}
+	}
+	if s.globals == nil {
+		return
+	}
+	for _, i := range s.globals.index.keysByPackage[pkg] {
+		key := prefix + s.globals.index.globals[i].Name
+		if _, hidden := s.PackageSymbols[key]; hidden {
+			continue
+		}
+		if !fn(key, s.globals.lookup(s, i)) {
+			return
+		}
+	}
+}
+
 // LookupInPackage resolves a symbol by preferring a package-qualified match in
 // the current scope chain before falling back to a bare-name lookup. The
 // bare-name fallback into Symbols is intentional: builtins and user-package
@@ -181,8 +249,8 @@ func (s *Scope) LookupInPackage(name, pkg string) *Symbol {
 	// concatenation in the lookup so short keys use Go's stack buffer.
 	for scope := s; scope != nil; scope = scope.Parent {
 		if pkg != "" {
-			if len(scope.PackageSymbols) > 0 {
-				if sym, ok := scope.PackageSymbols[pkg+":"+name]; ok {
+			if len(scope.PackageSymbols) > 0 || scope.globals != nil {
+				if sym, ok := scope.packageSymbol(pkg + ":" + name); ok {
 					return sym
 				}
 			}
@@ -208,7 +276,7 @@ func (s *Scope) LookupInPackage(name, pkg string) *Symbol {
 // does not consult bareNameIndex.
 func (s *Scope) LookupLocalInPackage(name, pkg string) *Symbol {
 	if pkg != "" {
-		if sym, ok := s.PackageSymbols[pkg+":"+name]; ok {
+		if sym, ok := s.packageSymbol(pkg + ":" + name); ok {
 			return sym
 		}
 	}

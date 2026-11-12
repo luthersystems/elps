@@ -37,7 +37,7 @@ func TestMacroExpansionStampNeverWritesTheExpansion(t *testing.T) {
 		if got == v {
 			t.Fatalf("a root that needs a stamp was returned as itself")
 		}
-		if got.source != callSite || got.Cells[0].source != callSite || got.Cells[1].source != callSite {
+		if got.loc() != callSite || got.Cells[0].loc() != callSite || got.Cells[1].loc() != callSite {
 			t.Errorf("the returned tree is not stamped throughout")
 		}
 		if got.Cells[0] == head || got.Cells[1] == arg {
@@ -46,7 +46,7 @@ func TestMacroExpansionStampNeverWritesTheExpansion(t *testing.T) {
 		if &got.Cells[0] == &v.Cells[0] {
 			t.Errorf("the copy shares the input's cell slice, so a cell write would land in the input")
 		}
-		if v.source != nil || head.source != nil || arg.source != nil || v.Cells[0] != head || v.Cells[1] != arg {
+		if v.loc() != nil || head.loc() != nil || arg.loc() != nil || v.Cells[0] != head || v.Cells[1] != arg {
 			t.Errorf("the input was written to")
 		}
 	})
@@ -61,16 +61,16 @@ func TestMacroExpansionStampNeverWritesTheExpansion(t *testing.T) {
 		if got == v {
 			t.Fatalf("a root whose cell changed was returned as itself")
 		}
-		if got.source != realLoc {
-			t.Errorf("a located root lost its location on the copy: %v", got.source)
+		if got.loc() != realLoc {
+			t.Errorf("a located root lost its location on the copy: %v", got.loc())
 		}
 		if got.Cells[0] != head {
 			t.Errorf("a located cell was copied needlessly")
 		}
-		if got.Cells[1] == fn || got.Cells[1].source != callSite || got.Cells[1].Native != fn.Native {
+		if got.Cells[1] == fn || got.Cells[1].loc() != callSite || got.Cells[1].Native != fn.Native {
 			t.Errorf("the value cell is not a stamped private header of the same function")
 		}
-		if v.Cells[1] != fn || fn.source != nil {
+		if v.Cells[1] != fn || fn.loc() != nil {
 			t.Errorf("the input's value cell was written to (issue #582)")
 		}
 	})
@@ -85,10 +85,10 @@ func TestMacroExpansionStampNeverWritesTheExpansion(t *testing.T) {
 		if got == v || got.Cells[1] == inner {
 			t.Fatalf("the nested unlocated list was not replaced on the copy")
 		}
-		if got.Cells[1].source != callSite || got.Cells[1].Cells[0].source != callSite {
+		if got.Cells[1].loc() != callSite || got.Cells[1].Cells[0].loc() != callSite {
 			t.Errorf("the nested copy is not stamped")
 		}
-		if v.Cells[1] != inner || inner.source != nil || inner.Cells[0].source != nil {
+		if v.Cells[1] != inner || inner.loc() != nil || inner.Cells[0].loc() != nil {
 			t.Errorf("the input's nested list was written to (issue #582)")
 		}
 	})

@@ -298,15 +298,29 @@ func (t *escTracker) checkFieldStore(lhs, rhs ast.Expr) {
 	}
 }
 
-// checkSetSource flags v.SetSource(loc) calls with a tainted argument —
-// the exported spelling of the LVal .source field write.
+// locationSetters are the LVal methods whose first argument becomes the
+// value's location: the exported SetSource, and the unexported setters
+// package lisp writes the source word through.  Since
+// luthersystems/elps#947 the word is an unsafe.Pointer that only those
+// setters (and locWord, see locTaint) write, so a field-write rule alone
+// would no longer see a location stored into an LVal.
+var locationSetters = map[string]bool{
+	"SetSource":   true,
+	"setPlainLoc": true,
+	"setLoc":      true,
+	"setNodeAux":  true,
+}
+
+// checkSetSource flags v.SetSource(loc) calls, and the unexported setters
+// in locationSetters, with a tainted location argument -- the spellings of
+// the LVal .source field write.
 func (t *escTracker) checkSetSource(call *ast.CallExpr) {
 	fn := methodCallee(t.pass, call)
-	if fn == nil || fn.Name() != "SetSource" || !recvIsLisp(fn, "LVal") {
+	if fn == nil || !locationSetters[fn.Name()] || !recvIsLisp(fn, "LVal") {
 		return
 	}
-	if len(call.Args) == 1 && t.locTaint(call.Args[0]) {
-		t.report(call.Pos(), "SetSource call")
+	if len(call.Args) >= 1 && t.locTaint(call.Args[0]) {
+		t.report(call.Pos(), fn.Name()+" call")
 	}
 }
 
@@ -377,9 +391,34 @@ func (t *escTracker) locTaint(e ast.Expr) bool {
 		}
 		return false
 	case *ast.CallExpr:
+		if arg := locWordArg(t.pass, x); arg != nil {
+			return t.locTaint(arg)
+		}
 		return t.callLocTaint(x)
 	}
 	return false
+}
+
+// locWordArg returns the location a call wraps into an untyped word, or
+// nil.  LVal.source is an unsafe.Pointer (luthersystems/elps#947), so a
+// composite literal stores its location as source: locWord(loc); an
+// unsafe.Pointer(loc) conversion is the same store spelled directly.  The
+// taint is the wrapped location's.
+func locWordArg(pass *analysis.Pass, call *ast.CallExpr) ast.Expr {
+	if len(call.Args) != 1 || !isLocationPtr(pass.TypesInfo.TypeOf(call.Args[0])) {
+		return nil
+	}
+	if tv, ok := pass.TypesInfo.Types[call.Fun]; ok && tv.IsType() {
+		if b, ok := types.Unalias(tv.Type).(*types.Basic); ok && b.Kind() == types.UnsafePointer {
+			return call.Args[0]
+		}
+		return nil
+	}
+	fn, ok := typeutil.Callee(pass.TypesInfo, call).(*types.Func)
+	if !ok || fn.Name() != "locWord" || fn.Pkg() == nil || fn.Pkg().Path() != lispPkgPath {
+		return nil
+	}
+	return call.Args[0]
 }
 
 // callLocTaint decides taint for a call in location position: a callee

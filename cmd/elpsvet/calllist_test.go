@@ -10,5 +10,5 @@ import (
 )
 
 func TestCallListAnalyzer(t *testing.T) {
-	analysistest.Run(t, filepath.Join(analysistest.TestData(), "calllist"), callListAnalyzer, lispPkgPath)
+	analysistest.Run(t, filepath.Join(analysistest.TestData(), "calllist"), callListAnalyzer, lispPkgPath, "github.com/luthersystems/elps/libx")
 }

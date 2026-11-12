@@ -640,13 +640,11 @@ func (s *macroStamper) stampedCopy(v *LVal) *LVal {
 	// may carry from an earlier expansion is replaced under a debugger
 	// and kept otherwise, for the same reason.
 	meta, mexp := v.fmtMeta(), v.macroExp()
-	cp.hasAux, cp.auxNoLoc = false, false
 	if isSmallInt(v) {
 		// The copy is an integer of the expansion's own, as it was
 		// when it was a fresh Int: it does not inherit the table's seal.
 		cp.sealed = false
 	}
-	cp.source = s.callSite //elps:aliases by design: callSite is the expansion-owned copy macroCall took (env.loc.Copy(), issue #431), shared by every node of one expansion
 	if s.ctx != nil {
 		s.nextID++
 		mexp = &macroExpansionInfo{
@@ -654,13 +652,13 @@ func (s *macroStamper) stampedCopy(v *LVal) *LVal {
 			ID:                    s.nextID,
 		}
 	}
-	if meta != nil || mexp != nil {
-		// The record needs a Location of its own: every node of the
-		// expansion shares callSite, and each has its own ID (see
-		// nodeAux).  This runs only under a debugger or on a
-		// format-preserving tree, so production pays nothing for it.
-		cp.setNodeAux(meta, mexp, false)
-	}
+	// With no record this is the plain location write.  With one, the copy
+	// gets a carrier of its own that points to callSite: every node of
+	// the expansion shares callSite, and each has its own ID (see
+	// auxKind).  That runs only under a debugger or on a
+	// format-preserving tree, so production pays nothing for it.
+	//elps:aliases by design: callSite is the expansion-owned copy macroCall took (env.loc.Copy(), issue #431), shared by every node of one expansion
+	cp.setNodeAux(s.callSite, meta, mexp)
 	return &cp
 }
 
@@ -1336,7 +1334,7 @@ func finishUnquote(v *LVal, cells []*LVal, opts unquoteAssembly) *LVal {
 	}
 	expr := SExpr(cells)
 	//elps:aliases deliberate in-runtime alias on the quasiquote hot path: v is the (sealed) quasiquote template node whose location was frozen at parse time, and the fresh expansion header mirrors it as display metadata — copying here would cost an allocation per quasiquote evaluation
-	expr.source = v.loc()
+	expr.setPlainLoc(v.loc())
 	return requote(expr, quoteLevel)
 }
 

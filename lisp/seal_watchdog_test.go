@@ -162,7 +162,7 @@ func sealWatchRead(v *LVal, depth int, budget *int, acc uint64) uint64 {
 	acc ^= wdBits(len(v.Str)) // loads the string header
 	acc += wdBits(v.Int)
 	acc ^= math.Float64bits(v.Float)
-	if src := v.source; src != nil {
+	if src := v.loc(); src != nil {
 		acc += wdBits(len(src.File)) + wdBits(len(src.Path))
 		acc ^= wdBits(src.Pos)<<1 ^ wdBits(src.Line)<<11 ^ wdBits(src.Col)<<21
 		acc ^= wdBits(src.EndPos)<<2 ^ wdBits(src.EndLine)<<12 ^ wdBits(src.EndCol)<<22

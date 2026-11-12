@@ -125,7 +125,7 @@ func TestEvalOperandMatchesEval(t *testing.T) {
 		env.Runtime.resolveEvalNestingLimit()
 		ctx := limit(inner)
 		x := operand()
-		x.source = src
+		x.setPlainLoc(src)
 		nesting := env.Runtime.evalNesting
 		var got *LVal
 		if fast {
@@ -275,9 +275,9 @@ func TestEvalOperandLeavesPanicsToTheCallForm(t *testing.T) {
 
 	// (list 1): Err is called for the form, for list, for 1 and for the call.
 	form := SExpr([]*LVal{Symbol("list"), Int(1)})
-	form.source = &token.Location{File: "panic.lisp", Line: 1, Col: 1}
-	form.Cells[0].source = &token.Location{File: "panic.lisp", Line: 1, Col: 2}
-	form.Cells[1].source = &token.Location{File: "panic.lisp", Line: 1, Col: 7}
+	form.setPlainLoc(&token.Location{File: "panic.lisp", Line: 1, Col: 1})
+	form.Cells[0].setPlainLoc(&token.Location{File: "panic.lisp", Line: 1, Col: 2})
+	form.Cells[1].setPlainLoc(&token.Location{File: "panic.lisp", Line: 1, Col: 7})
 	count := &panicErrCtx{Context: context.Background()}
 	if v := env.eval(count, form); v.Type != LSExpr || count.calls != 4 {
 		t.Fatalf("(list 1) = %v after %d calls of Err, want (1) after 4", v, count.calls)
@@ -286,7 +286,7 @@ func TestEvalOperandLeavesPanicsToTheCallForm(t *testing.T) {
 	if got.Type != LError || got.Str != CondInternalPanic {
 		t.Fatalf("(list 1) with a panic at 1 = %v, want an internal-panic error", got)
 	}
-	if loc, _ := got.Source(); loc != *form.source {
-		t.Errorf("the panic at 1 reports %v, want the call form's location %v", loc, *form.source)
+	if loc, _ := got.Source(); loc != *form.loc() {
+		t.Errorf("the panic at 1 reports %v, want the call form's location %v", loc, *form.loc())
 	}
 }

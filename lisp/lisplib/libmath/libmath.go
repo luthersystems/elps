@@ -41,23 +41,23 @@ func LoadPackage(env *lisp.LEnv) *lisp.LVal {
 }
 
 //elpsvet:allow package builtin table; formals are sealed by libutil at construction and shared via registrationFormals (lisp.LEnv.AddBuiltins)
-var builtins = []*libutil.Builtin{
-	libutil.FunctionDoc("nan?", lisp.Formals("number"), builtinIsNaN,
+var builtins = []lisp.LBuiltinDef{
+	lisp.DropsArgList(libutil.FunctionDoc("nan?", lisp.Formals("number"), builtinIsNaN,
 		`Returns true if number is IEEE 754 NaN (not-a-number). Integers
 		always return false. Returns an error if the argument is not
-		a number.`),
-	libutil.FunctionDoc("abs", lisp.Formals("number"), builtinAbs,
+		a number.`)),
+	lisp.DropsArgList(libutil.FunctionDoc("abs", lisp.Formals("number"), builtinAbs,
 		`Returns the absolute value of number. Preserves the type: an int
 		argument returns an int, a float returns a float. Returns an
-		error on integer overflow (min-int).`),
-	libutil.FunctionDoc("ceil", lisp.Formals("number"), builtinCeil,
+		error on integer overflow (min-int).`)),
+	lisp.DropsArgList(libutil.FunctionDoc("ceil", lisp.Formals("number"), builtinCeil,
 		`Returns the smallest float not less than number (rounds toward
 		positive infinity). Integers are returned unchanged. The result
-		is always a float for float input.`),
-	libutil.FunctionDoc("floor", lisp.Formals("number"), builtinFloor,
+		is always a float for float input.`)),
+	lisp.DropsArgList(libutil.FunctionDoc("floor", lisp.Formals("number"), builtinFloor,
 		`Returns the largest float not greater than number (rounds toward
 		negative infinity). Integers are returned unchanged. The result
-		is always a float for float input.`),
+		is always a float for float input.`)),
 	libutil.FunctionDoc("sqrt", lisp.Formals("number"), builtinSqrt,
 		`Returns the square root of number as a float. Accepts int or
 		float arguments.`),
@@ -93,10 +93,10 @@ var builtins = []*libutil.Builtin{
 		`Returns the tangent of radians as a float.`),
 	libutil.FunctionDoc("tanh", lisp.Formals("radians"), builtinTanh,
 		`Returns the hyperbolic tangent of radians as a float.`),
-	libutil.FunctionDoc("atan", lisp.Formals("radians", lisp.OptArgSymbol, "quotient"), builtinAtan,
+	lisp.DropsArgList(libutil.FunctionDoc("atan", lisp.Formals("radians", lisp.OptArgSymbol, "quotient"), builtinAtan,
 		`Returns the arctangent as a float. With one argument, returns
 		atan(radians). With two arguments, returns atan2(radians,
-		quotient), computing the angle in the correct quadrant.`),
+		quotient), computing the angle in the correct quadrant.`)),
 	libutil.FunctionDoc("atanh", lisp.Formals("radians"), builtinAtanh,
 		`Returns the inverse hyperbolic tangent as a float. The argument
 		must be in the range (-1, 1).`),

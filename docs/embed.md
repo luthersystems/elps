@@ -567,6 +567,21 @@ if err != nil {
 result := vm.FunCallContext(ctx, fn, lisp.SExpr(nil)) // "pong"
 ```
 
+### Per-VM Go caches
+
+A builtin must not keep state in its receiver, a closure or a package
+variable, because a template shares one builtin with every VM. A builtin that
+wants to remember work it already did keeps it on its own VM with
+`Runtime.VMCache(key)` and `Runtime.SetVMCache(key, v)` (a nil `v` deletes the
+entry). Use a key of an unexported type, so no other package can read or
+overwrite the entry.
+
+The cache is for Go values only. Templates do not publish it, and `NewVM` and
+a fork start with it empty, so a builtin's result must never depend on whether
+an entry is there: the cache may only save time. libregexp uses it to keep
+each pattern's compiled matcher and program size, so that only the first
+match of a pattern on a VM compiles it.
+
 ### Go function objects
 
 A Lisp library often returns an object as a closure over its state, and
@@ -913,6 +928,37 @@ The rules are exact, so step counts stay deterministic:
   of every program that calls it with keywords. For a host that meters steps,
   that is a coordinated upgrade like any other step change. A new builtin can
   adopt it freely.
+
+**Reuse of the argument list: `lisp.DropsArgList`.** The evaluator builds a
+list for each call form: a header and the cells of the evaluated arguments.
+A builtin may keep that list, so the evaluator allocates a new one for each
+call. Register a builtin that keeps neither the list nor a slice of its
+`Cells` as `lisp.DropsArgList(def)`, and the evaluator gives the list back to
+the VM when the call returns. The next call uses the same storage. This saves
+one allocation for each call and changes no result, step count or error text:
+
+```go
+env.AddBuiltins(true, lisp.DropsArgList(elpsutil.FunctionDoc("second",
+	lisp.Formals("a", "b"), builtinSecond, "...")))
+
+func builtinSecond(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+	return args.Cells[1] // a single cell may go anywhere
+}
+```
+
+- The builtin may read, evaluate, return or store single cells. It must not
+  return the list, store the list or a slice of its cells, capture either in
+  a closure, or pass either to code that may keep it. `lisp.ReadArgs` keeps
+  the list in the `ArgReader` it returns, so the typed bindings
+  (`lisp.Func1` to `lisp.Func3E`) cannot carry the mark.
+- elpsvet's `elpscalllist` rule checks each builtin that elps marks. Your
+  own mark is your promise. Run your tests under the `elpscheck` build tag:
+  that build fills each returned list with invalid values, so a builtin that
+  kept its list reads them.
+- The mark works through `AddBuiltins`, `BindBuiltins`, `RegisterBuiltins`
+  and `AddSpecialOps`. A macro's list is never reused.
+- `DropsArgList(def)` returns a wrapper, as `FreeKeywords` does, and the two
+  compose in either order.
 
 ### Go-style helpers for ports
 
@@ -2471,6 +2517,17 @@ take priority. When expansion fails (the macro is not loaded in the env, or
 it signals), the analyzer falls back to that name-based guess, and a name it
 guesses has `GeneratedBy` nil. Each call site is expanded at most once per
 analysis.
+
+A tool that analyzes many files with the same `Config.ExtraGlobals` should
+also set `Config.GlobalIndex` to `analysis.NewGlobalIndex(globals)`, built one
+time. Without it, the analysis of each file copies every global into its root
+scope, so a workspace costs files times globals. `LintFiles` and the language
+server set it. Results are the same. With an index, `RootScope.PackageSymbols`
+holds only the package-qualified globals the file looked up, so find a global
+with the `Scope` lookup methods, and list a package's symbols with
+`Scope.EachPackageSymbol`, not by ranging over the maps. A check that searches
+`Result.ExtraGlobals` for a name in each file can ask `Result.GlobalIndex`
+instead: `GlobalIndex.Named(name)` yields the same globals in the same order.
 
 ### Walking and expanding code
 

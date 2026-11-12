@@ -616,7 +616,7 @@ func (pkg *Package) get(k *LVal) *LVal {
 	// the embedder) while k remains live program state, so the two must not
 	// share a *token.Location (cold error path; the copy is free in
 	// practice).  Copy preserves nil.
-	lerr.source = k.loc().Copy()
+	lerr.setPlainLoc(k.loc().Copy())
 	return lerr
 }
 

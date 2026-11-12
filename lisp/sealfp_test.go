@@ -120,13 +120,13 @@ func TestSealedASTFingerprintSourceMetadata(t *testing.T) {
 	defer resume()
 
 	// Content change: a #370-shaped restamp to a different call site.
-	inner.source = &token.Location{File: "elsewhere.lisp", Pos: 99, Line: 9, Col: 9} //elps:mutates -- deliberate, paused, restored
+	inner.setPlainLoc(&token.Location{File: "elsewhere.lisp", Pos: 99, Line: 9, Col: 9}) //elps:mutates -- deliberate, paused, restored
 	if fp := fingerprintOne(root); fp == fp0 {
 		t.Error("fingerprint did not move when a sealed node's source location was restamped")
 	}
 
 	// Clearing the location entirely must also move the digest.
-	inner.source = nil //elps:mutates -- deliberate, paused, restored
+	inner.setPlainLoc(nil) //elps:mutates -- deliberate, paused, restored
 	if fp := fingerprintOne(root); fp == fp0 {
 		t.Error("fingerprint did not move when a sealed node's source location was cleared")
 	}
@@ -135,12 +135,12 @@ func TestSealedASTFingerprintSourceMetadata(t *testing.T) {
 	// fingerprint must NOT move — this is the documented split with the
 	// -race watchdog, which sees the write itself.
 	clone := *origLoc
-	inner.source = &clone //elps:mutates -- deliberate, paused, restored below
+	inner.setPlainLoc(&clone) //elps:mutates -- deliberate, paused, restored below
 	if fp := fingerprintOne(root); fp != fp0 {
 		t.Error("fingerprint moved on an equal-content source pointer swap; it must hash contents, not identity")
 	}
 
-	inner.source = origLoc //elps:mutates -- restore
+	inner.setPlainLoc(origLoc) //elps:mutates -- restore
 	if fp := fingerprintOne(root); fp != fp0 {
 		t.Fatal("fingerprint did not return after restoring the original source pointer")
 	}

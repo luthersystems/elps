@@ -77,6 +77,9 @@ func (env *LEnv) BindBuiltins(opts BindOpts, defs ...LBuiltinDef) *LVal {
 		if freeKeys, _ := freeKeysOf(f); freeKeys != 0 {
 			v.funData().freeKeys = freeKeys
 		}
+		if dropsCallList(f) {
+			v.funData().dropsList = true
+		}
 		pkg.putName(name, v)
 		registry.register(v, shadows)
 		if opts.Export {

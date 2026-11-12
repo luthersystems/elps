@@ -3,10 +3,13 @@
 package analysis
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"runtime"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/luthersystems/elps/astutil"
 	"github.com/luthersystems/elps/lisp"
@@ -92,6 +95,12 @@ type EnvMacroExpander struct {
 	// (*EnvMacroExpander).LoadWorkspaceMacros does both the loading and the
 	// invalidation, and is the safe way to add workspace macros to a live
 	// expander's env.
+
+	// retired holds the FIDs of macros that a reload removed from the
+	// workspace (see ReloadFileMacros). An env cannot unbind a symbol, so
+	// the old macro stays bound; the expander refuses to expand it. A new
+	// definition of the name gets a new FID, so it expands again.
+	retired map[string]struct{}
 
 	// aborted counts ExpandMacro calls that left the function without
 	// reaching the statement after expand() returned. Monotonic, and there
@@ -288,7 +297,7 @@ func (e *EnvMacroExpander) expand(form *lisp.LVal, pkg string) *lisp.LVal {
 	}
 
 	mac := e.Env.Get(form.Cells[0])
-	if mac.Type != lisp.LFun || !mac.IsMacro() {
+	if mac.Type != lisp.LFun || !mac.IsMacro() || e.isRetired(mac) {
 		// Cache the negative result to avoid future lookups.
 		if e.notMacro == nil {
 			e.notMacro = make(map[string]bool)
@@ -379,14 +388,124 @@ func LoadWorkspaceMacros(env *lisp.LEnv, preamble []*lisp.LVal) []error {
 
 	var errs []error
 	for _, form := range preamble {
-		if err := evalPreambleForm(env, form); err != nil {
+		if err := evalPreambleForm(env, env.Eval, form); err != nil {
 			errs = append(errs, err)
 		}
 	}
 	return errs
 }
 
-func evalPreambleForm(env *lisp.LEnv, form *lisp.LVal) error {
+// PreambleFormMaxSteps is the step budget of one preamble form that
+// LoadWorkspaceMacrosContext and ReloadFileMacros evaluate, when the env
+// has no step budget of its own. Package setup and definitions use a few
+// steps each. A form that computes a value at load time, such as
+// (set 'table (build-table)), gets about a second of work.
+const PreambleFormMaxSteps = 10_000_000
+
+// PreambleLoadTimeout and PreambleReloadTimeout are the deadlines that
+// the language server and the MCP server give a bounded load: the
+// preamble of a whole workspace at an index build, and that of one file
+// at a reload. They back the step budget of each form, and stop a load
+// that many slow forms, or a native that charges no steps, would make
+// long.
+const (
+	PreambleLoadTimeout   = 30 * time.Second
+	PreambleReloadTimeout = 2 * time.Second
+)
+
+// ErrPreambleLimit marks the error of a preamble form that used up its
+// step budget, or whose context ended (see LoadWorkspaceMacrosContext).
+var ErrPreambleLimit = errors.New("preamble form stopped at its limit")
+
+// PreambleLoad is the result of a bounded load of a preamble.
+type PreambleLoad struct {
+	// Errors has one entry for each form that failed. The error of a
+	// form that stopped at a limit wraps ErrPreambleLimit.
+	Errors []error
+	// Unfinished is the index of the first form that did not complete
+	// because the context ended. The forms from it on did not run, or ran
+	// in part. It is the length of the preamble when the context did not
+	// end, the only case in which every form ran.
+	Unfinished int
+	// Stopped reports that a form stopped at its step budget or at the
+	// end of the context.
+	Stopped bool
+}
+
+// LoadWorkspaceMacrosContext is LoadWorkspaceMacros with limits. Each
+// form gets a budget of PreambleFormMaxSteps steps (unless the env has a
+// step budget of its own), and the evaluation stops when ctx ends.
+//
+// A form over its step budget fails alone, and the forms after it still
+// load. When ctx ends, no later form runs; PreambleLoad.Unfinished says
+// where the load stopped, so a caller can load the rest later.
+//
+// An editor evaluates workspace source that the user did not run, while
+// every analysis waits: an index build loads the preamble before the
+// first analysis, and a reload runs under the lock of every expansion. A
+// form that does not end, such as a set of a loop, would stop the
+// server. LoadWorkspaceMacros stays unbounded for elps lint, a one-shot
+// process that evaluates the code as a program does and that the user
+// can stop.
+//
+// Use the method of EnvMacroExpander when an expander of env can run
+// on another goroutine.
+func LoadWorkspaceMacrosContext(ctx context.Context, env *lisp.LEnv, preamble []*lisp.LVal) PreambleLoad {
+	currPkg := env.Runtime.Package
+	defer func() { env.Runtime.Package = currPkg }()
+	// The budget is set for each form and cleared after the load, so the
+	// expansions after the load run without it. An env with a budget of
+	// its own keeps it: the embedder chose that bound.
+	ownBudget, _ := env.Runtime.StepBudget()
+	if ownBudget == 0 {
+		defer env.Runtime.SetStepBudget(0)
+	}
+	eval := func(form *lisp.LVal) *lisp.LVal { return env.EvalContext(ctx, form) }
+	load := PreambleLoad{Unfinished: len(preamble)}
+	for i, form := range preamble {
+		if err := ctx.Err(); err != nil {
+			load.Errors = append(load.Errors, fmt.Errorf("%w: %w", ErrPreambleLimit, err))
+			load.Unfinished, load.Stopped = i, true
+			return load
+		}
+		if ownBudget == 0 {
+			env.Runtime.SetStepBudget(PreambleFormMaxSteps)
+		}
+		err := evalPreambleForm(env, eval, form)
+		if err == nil {
+			continue
+		}
+		load.Errors = append(load.Errors, err)
+		if errors.Is(err, ErrPreambleLimit) {
+			load.Stopped = true
+			if ctx.Err() != nil {
+				// Each later form would fail the same way.
+				load.Unfinished = i
+				return load
+			}
+		}
+	}
+	return load
+}
+
+// LoadWorkspaceMacrosContext is the package-level function of that name,
+// under the lock that serializes ExpandMacro, and it clears the
+// not-a-macro cache, as LoadWorkspaceMacros does. The language server and
+// the MCP server load workspace macros through it.
+func (e *EnvMacroExpander) LoadWorkspaceMacrosContext(ctx context.Context, preamble []*lisp.LVal) PreambleLoad {
+	if e.Env == nil {
+		return PreambleLoad{Unfinished: len(preamble)}
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	load := LoadWorkspaceMacrosContext(ctx, e.Env, preamble)
+	e.notMacro = nil
+	return load
+}
+
+// evalPreambleForm evaluates one preamble form with eval: env.Eval for
+// LoadWorkspaceMacros, env.EvalContext for the bounded load.
+func evalPreambleForm(env *lisp.LEnv, eval func(*lisp.LVal) *lisp.LVal, form *lisp.LVal) error {
 	var retErr error
 	func() {
 		defer func() {
@@ -394,13 +513,13 @@ func evalPreambleForm(env *lisp.LEnv, form *lisp.LVal) error {
 				retErr = fmt.Errorf("panic in preamble form: %v", r)
 			}
 		}()
-		retErr = evalPreambleFormUnchecked(env, form)
+		retErr = evalPreambleFormUnchecked(env, eval, form)
 	}()
 	return retErr
 }
 
 // evalPreambleFormUnchecked is evalPreambleForm without the panic recovery.
-func evalPreambleFormUnchecked(env *lisp.LEnv, form *lisp.LVal) error {
+func evalPreambleFormUnchecked(env *lisp.LEnv, eval func(*lisp.LVal) *lisp.LVal, form *lisp.LVal) error {
 	// Auto-create workspace packages so in-package doesn't fail.
 	// Import the lang package so builtins (defmacro, use-package, etc.) work.
 	head := astutil.HeadSymbol(form)
@@ -413,8 +532,12 @@ func evalPreambleFormUnchecked(env *lisp.LEnv, form *lisp.LVal) error {
 			env.UsePackage(lisp.Symbol(env.Runtime.Registry.Lang))
 		}
 	}
-	result := env.Eval(form)
+	result := eval(form)
 	if result.IsError() {
+		switch result.Str {
+		case lisp.CondStepBudgetExceeded, lisp.CondStepLimitExceeded, lisp.CondContextCancelled:
+			return fmt.Errorf("%w: preamble (%s): %v", ErrPreambleLimit, head, result)
+		}
 		if head == "defmacro" {
 			return fmt.Errorf("error loading macro %s: %v", preambleDefName(form), result)
 		}

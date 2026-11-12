@@ -158,7 +158,8 @@ func blockCopyableFormals(v *LVal) bool {
 // where it used to read `Source == defaultSourceLocation` (issue #362).  A
 // formals list built by lisp.Formals satisfies it; anything the parser
 // produced does not, and falls back to LVal.Copy, which duplicates the
-// location.
+// location.  A node with a tooling record has a non-nil source too (its
+// carrier, see auxKind), so it also takes the Copy path.
 func nativeLeafLVal(v *LVal) bool {
-	return v.source == nil && !v.hasAux
+	return v.source == nil
 }

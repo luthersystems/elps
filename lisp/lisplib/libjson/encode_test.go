@@ -486,6 +486,7 @@ func TestEncoderFieldsAreAccountedForInGetEncoder(t *testing.T) {
 	known := []string{
 		"memoMore",      // reset in getEncoder (and cleared in putEncoder)
 		"env",           // reset in getEncoder (and cleared in putEncoder)
+		"marshalJSON",   // scratch: writeMarshaler sets its method before each use (cleared in putEncoder)
 		"memo",          // reset in getEncoder (and cleared in putEncoder)
 		"buf",           // Reset() in getEncoder
 		"chargedKiB",    // reset in getEncoder

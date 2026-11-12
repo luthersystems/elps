@@ -112,11 +112,11 @@ func TestMacroExpansionStampsValuesOnPrivateHeaders(t *testing.T) {
 			if got == v {
 				t.Fatalf("a value root was returned as itself, not a private copy")
 			}
-			if got.source != callSite {
-				t.Errorf("the copy is not stamped: %v", got.source)
+			if got.loc() != callSite {
+				t.Errorf("the copy is not stamped: %v", got.loc())
 			}
-			if v.source != nil || v.macroExp() != nil {
-				t.Errorf("the value itself was written to: source %v, macroExpansion %v", v.source, v.macroExp())
+			if v.loc() != nil || v.macroExp() != nil {
+				t.Errorf("the value itself was written to: source %v, macroExpansion %v", v.loc(), v.macroExp())
 			}
 			if got.Type != v.Type || got.Native != v.Native || (len(v.Cells) > 0 && &got.Cells[0] != &v.Cells[0]) {
 				t.Errorf("the copy does not share the value's storage")
@@ -128,20 +128,20 @@ func TestMacroExpansionStampsValuesOnPrivateHeaders(t *testing.T) {
 			if got == expansion {
 				t.Fatalf("a syntax root that needs a stamp must be replaced by a stamped copy, not written (issue #582)")
 			}
-			if got.source != callSite || got.Cells[0].source != callSite {
+			if got.loc() != callSite || got.Cells[0].loc() != callSite {
 				t.Errorf("syntax nodes of the returned tree were not stamped")
 			}
-			if expansion.source != nil || expansion.Cells[0].source != nil || expansion.Cells[1] != v {
+			if expansion.loc() != nil || expansion.Cells[0].loc() != nil || expansion.Cells[1] != v {
 				t.Errorf("the input expansion was written to")
 			}
 			if got.Cells[1] == v {
 				t.Fatalf("the value was left in the expansion instead of a private copy")
 			}
-			if got.Cells[1].source != callSite {
-				t.Errorf("the copy in the expansion is not stamped: %v", got.Cells[1].source)
+			if got.Cells[1].loc() != callSite {
+				t.Errorf("the copy in the expansion is not stamped: %v", got.Cells[1].loc())
 			}
-			if v.source != nil || v.macroExp() != nil {
-				t.Errorf("the value itself was written to: source %v, macroExpansion %v", v.source, v.macroExp())
+			if v.loc() != nil || v.macroExp() != nil {
+				t.Errorf("the value itself was written to: source %v, macroExpansion %v", v.loc(), v.macroExp())
 			}
 		})
 	}

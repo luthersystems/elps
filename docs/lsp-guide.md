@@ -169,6 +169,37 @@ The server performs workspace scanning in the background on initialization.
 Each document change triggers re-parsing and re-analysis with the workspace
 index providing cross-file context.
 
+When the embedder gives the server an environment (`lsp.WithEnv`), the
+index build loads the macros of the workspace into it, and the analysis
+expands calls of those macros. A save keeps the loaded macros in step
+with the file. If the save changed the file's `in-package`, `use-package`,
+`export`, `defmacro`, `defun` or `set` forms, the server evaluates those
+forms of the file again, so a changed macro expands with its new
+definition. A macro that the save removed or renamed no longer expands.
+A save that changes no such form (a function body or a comment) evaluates
+nothing. A file with no `in-package` form reloads in the package the index
+build gave it: the package that the file before it left active.
+
+The server bounds this evaluation, because every analysis waits for it.
+Each form has a budget of 10,000,000 steps
+(`analysis.PreambleFormMaxSteps`). The index build has a deadline of 30
+seconds, and a save a deadline of 2 seconds. The server logs a warning
+(`window/logMessage`) for each form that stops at a limit.
+
+At the index build, a form that uses up its step budget fails, and the
+forms after it still load. When the deadline passes, no later form runs:
+the server logs a warning that names the files whose macros did not load,
+and loads each of them at its next save, even when the save changes
+nothing.
+
+At a save, a form that reaches a limit leaves the macros of the file with
+the definitions they had before the save. The next save of the file loads
+it again, even with the same text.
+
+Limits: a `defun` or `set` that the save removed stays bound in the
+environment until the server restarts, and a macro that another file
+also defines keeps the definition the environment has.
+
 ### Fault-Tolerant Parsing
 
 The parser is run in a fault-tolerant mode for the LSP: when a document

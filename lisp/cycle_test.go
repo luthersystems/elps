@@ -154,10 +154,10 @@ func TestStampMacroExpansionOfCyclicValue(t *testing.T) {
 	callSite := &token.Location{File: "test.lisp", Line: 5, Col: 1}
 	got := stampMacroExpansion(v, callSite, nil, env.Runtime)
 	assert.NotSame(t, v, got, "the stamp is copy-on-write; a root that needs a stamp is replaced (issue #582)")
-	assert.Equal(t, callSite, got.source, "the root must be stamped")
-	assert.Equal(t, callSite, got.Cells[0].source, "the element must be stamped")
+	assert.Equal(t, callSite, got.loc(), "the root must be stamped")
+	assert.Equal(t, callSite, got.Cells[0].loc(), "the element must be stamped")
 	assert.Same(t, got, got.Cells[1], "the cycle is preserved in the copy")
-	assert.Nil(t, v.source, "the input was written to")
+	assert.Nil(t, v.loc(), "the input was written to")
 	assert.Same(t, v, v.Cells[1], "the input's cycle is untouched")
 }
 

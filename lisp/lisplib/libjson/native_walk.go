@@ -118,13 +118,15 @@ type nativeFrame struct {
 	wrote   bool // frameStruct: a member has been written
 }
 
-// nativeWalker decides whether encoding/json may marshal a native
-// (luthersystems/elps#802, luthersystems/elps#928).
+// nativeWalker decides whether this package may write a native, and then
+// writes it (luthersystems/elps#802, luthersystems/elps#928,
+// luthersystems/elps#950).
 //
 // It visits the values the JSON v1 engine visits, by the same rules: the same
 // Marshaler and TextMarshaler dispatch (including addressability), the same
 // struct fields (nativeTypeFields) and the same omitempty and omitzero
-// tests.  It writes nothing, and it computes:
+// tests.  It makes two passes.  The measuring pass (boundNative) writes
+// nothing, and it computes:
 //
 //   - est, a lower bound on the bytes encoding/json writes. A Marshaler's
 //     output is unknown until it runs, so it counts as its smallest possible
@@ -149,17 +151,20 @@ type nativeFrame struct {
 // (luthersystems/elps#928).  The v2 engine, Go 1.27's default, writes some
 // of these values (a map with float keys, a nil map with bool keys) and
 // reports the others with different text.  substrate endorses the result
-// of a dump, so it must not move with the engine.  encoding/json therefore
-// only runs on a native the walk has passed, and the walk's errors are the
-// same on both engines.
+// of a dump, so it must not move with the engine.  So the walk's errors are
+// the same on both engines.
+//
+// The writing pass (writeNative) runs only on a native the measuring pass
+// has passed.  It writes the bytes the v1 engine writes, on both engines,
+// and gives only a MarshalJSON value to encoding/json (see writeMarshaler).
 //
 // The walk stops at the first problem it meets.  It visits a map's entries
 // sorted by their JSON key names, so that problem is the same on every run
-// (luthersystems/elps#807).  Sorting can call a key's MarshalText.  The walk
-// calls no value marshaler: encoding/json calls each one once, after the
-// walk has passed the native, and encodeNative reports a failure there.  So
-// a problem the walk can see wins over a failing marshaler, wherever the two
-// are in the value.
+// (luthersystems/elps#807).  Sorting can call a key's MarshalText, in each
+// pass.  The measuring pass calls no value marshaler: the writing pass calls
+// each one once, and reports a failure there.  So a problem the measuring
+// pass can see wins over a failing marshaler, wherever the two are in the
+// value.
 //
 // The walk does not recurse: it keeps the containers it is inside of on an
 // explicit stack, so its own stack does not grow with the native.  It charges
@@ -175,6 +180,10 @@ type nativeWalker struct {
 	// framesArr, the rest in framesMore.  Indexed rather than sliced, so the
 	// walker holds no pointer into itself and stays on the stack.
 	framesMore []nativeFrame
+
+	// keySlab holds the sorted keys of the open map[string]any frames,
+	// one run after another, innermost last.
+	keySlab []string
 
 	// The pointers, maps and slices open on the current path, stored the
 	// same way.  refIndex indexes them all once there are more than
@@ -196,6 +205,10 @@ type nativeWalker struct {
 
 	depth     int
 	jsonDepth int
+
+	// write selects the writing pass (see writeNative): the walk writes
+	// the native to enc.buf, and counts, charges and polls nothing.
+	write bool
 }
 
 // nativeWalkPollBytes is how many bytes of est the walk covers between
@@ -230,9 +243,10 @@ func (w *nativeWalker) refuse(format string, args ...any) {
 	}
 }
 
-// add counts n more output bytes.
+// add counts n more output bytes.  The writing pass counts nothing: the
+// measuring pass has charged the native already.
 func (w *nativeWalker) add(n int) {
-	if w.err != nil {
+	if w.err != nil || w.write {
 		return
 	}
 	w.est += n
@@ -300,6 +314,7 @@ func (w *nativeWalker) step() {
 			w.pop()
 			return
 		}
+		w.comma(f.i)
 		elem := f.v.Index(f.i)
 		f.i++
 		if w.descend() {
@@ -310,6 +325,7 @@ func (w *nativeWalker) step() {
 			w.pop()
 			return
 		}
+		w.comma(f.i)
 		elem := f.anys[f.i]
 		f.i++
 		w.anyElem(elem)
@@ -318,18 +334,20 @@ func (w *nativeWalker) step() {
 			w.pop()
 			return
 		}
+		w.comma(f.i)
 		k := f.keys[f.i]
 		f.i++
-		w.str(k, 1, true)
+		w.key(k)
 		w.anyElem(f.anyMap[k])
 	case frameMap:
 		if f.i == len(f.entries) {
 			w.pop()
 			return
 		}
+		w.comma(f.i)
 		e := f.entries[f.i]
 		f.i++
-		w.str(e.name, 1, true)
+		w.key(e.name)
 		if w.descend() {
 			w.value(e.val, false, 1, 0)
 		}
@@ -343,9 +361,11 @@ func (w *nativeWalker) step() {
 			}
 			if f.wrote {
 				w.add(1)
+				w.writeByte(',')
 			}
 			f.wrote = true
-			w.add(fd.nameLen)
+			w.add(len(fd.nameJSON))
+			w.writeString(fd.nameJSON)
 			if w.descend() {
 				w.value(fv, fd.quoted, 1, 0)
 			}
@@ -389,6 +409,7 @@ func (w *nativeWalker) push(f nativeFrame) {
 		w.fail(encodeUnloadableNativeError{err: errNativeJSONTooDeep})
 	}
 	w.add(2)
+	w.writeByte(f.open())
 	if w.nframes < len(w.framesArr) {
 		w.framesArr[w.nframes] = f
 	} else {
@@ -408,7 +429,23 @@ func (w *nativeWalker) pop() {
 		w.framesMore = w.framesMore[:w.nframes-len(w.framesArr)]
 	}
 	w.jsonDepth--
+	if f.kind == frameAnyMap {
+		// The map's keys are the last ones on keySlab.
+		end := len(w.keySlab)
+		clear(w.keySlab[end-len(f.keys) : end])
+		w.keySlab = w.keySlab[:end-len(f.keys)]
+	}
+	w.writeByte(f.open() + 2) // ] after [, } after {
 	w.release(f.levels, f.refs)
+}
+
+// open is the byte that opens f's JSON container.  The byte two above it
+// in ASCII closes it.
+func (f *nativeFrame) open() byte {
+	if f.kind == frameArray || f.kind == frameAnySlice {
+		return '['
+	}
+	return '{'
 }
 
 func (w *nativeWalker) frame(i int) *nativeFrame {
@@ -425,7 +462,7 @@ func (w *nativeWalker) anyElem(e any) {
 		return
 	}
 	if e == nil {
-		w.add(4)
+		w.null()
 		w.release(1, 0)
 		return
 	}
@@ -443,36 +480,39 @@ func (w *nativeWalker) anyElem(e any) {
 func (w *nativeWalker) anyValue(x any, levels, refs int) {
 	switch t := x.(type) {
 	case nil:
-		w.add(4)
+		w.null()
 	case string:
-		w.str(t, 0, false)
+		w.strValue(t, false)
 	case float64:
 		if math.IsInf(t, 0) || math.IsNaN(t) {
 			w.refuseFloat(t)
 		} else {
-			w.add(nativeFloatLen(t, 64))
+			w.float(t, 64, false)
 		}
 	case bool:
-		w.add(boolLen(t))
+		w.boolean(t, false)
 	case map[string]any:
 		if t == nil {
-			w.add(4)
+			w.null()
 			break
 		}
 		if !w.enterRef(reflect.TypeOf(x), nativeWalkKey{ptr: reflect.ValueOf(x).Pointer()}) {
 			break
 		}
-		keys := make([]string, 0, len(t))
+		// The keys of every open map share keySlab, so the walk does not
+		// allocate a slice per map in each of its two passes.
+		start := len(w.keySlab)
 		for k := range t {
-			keys = append(keys, k)
+			w.keySlab = append(w.keySlab, k)
 		}
+		keys := w.keySlab[start:len(w.keySlab):len(w.keySlab)]
 		slices.Sort(keys)
 		w.add(max(0, len(t)-1))
 		w.push(nativeFrame{kind: frameAnyMap, anyMap: t, keys: keys, levels: levels, refs: refs + 1})
 		return
 	case []any:
 		if t == nil {
-			w.add(4)
+			w.null()
 			break
 		}
 		if !w.enterRef(reflect.TypeOf(x), nativeWalkKey{ptr: reflect.ValueOf(x).Pointer(), len: len(t)}) {
@@ -494,7 +534,7 @@ func (w *nativeWalker) anyValue(x any, levels, refs int) {
 func (w *nativeWalker) value(v reflect.Value, quoted bool, levels, refs int) {
 	for {
 		if !v.IsValid() {
-			w.add(4) // null
+			w.null()
 			break
 		}
 		info := nativeInfo(v.Type())
@@ -518,30 +558,26 @@ func (w *nativeWalker) value(v reflect.Value, quoted bool, levels, refs int) {
 			w.marshaler(v, false, true)
 			break
 		}
-		q := 0
-		if quoted {
-			q = 2
-		}
 		switch v.Kind() {
 		case reflect.Bool:
-			w.add(boolLen(v.Bool()) + q)
+			w.boolean(v.Bool(), quoted)
 		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
 			var b [24]byte
-			w.add(len(strconv.AppendInt(b[:0], v.Int(), 10)) + q)
+			w.number(strconv.AppendInt(b[:0], v.Int(), 10), quoted)
 		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
 			var b [24]byte
-			w.add(len(strconv.AppendUint(b[:0], v.Uint(), 10)) + q)
+			w.number(strconv.AppendUint(b[:0], v.Uint(), 10), quoted)
 		case reflect.Float32, reflect.Float64:
 			f := v.Float()
 			if math.IsInf(f, 0) || math.IsNaN(f) {
 				w.refuseFloat(f)
 				break
 			}
-			w.add(nativeFloatLen(f, v.Type().Bits()) + q)
+			w.float(f, v.Type().Bits(), quoted)
 		case reflect.String:
 			s := v.String()
 			if v.Type() != jsonNumberType {
-				w.str(s, q, false)
+				w.strValue(s, quoted)
 				break
 			}
 			if s == "" {
@@ -551,10 +587,10 @@ func (w *nativeWalker) value(v reflect.Value, quoted bool, levels, refs int) {
 				w.refuse("invalid json.Number %q", s)
 				break
 			}
-			w.add(len(s) + q)
+			w.number([]byte(s), quoted)
 		case reflect.Interface:
 			if v.IsNil() {
-				w.add(4)
+				w.null()
 				break
 			}
 			if !w.descend() {
@@ -569,7 +605,7 @@ func (w *nativeWalker) value(v reflect.Value, quoted bool, levels, refs int) {
 			continue
 		case reflect.Pointer:
 			if v.IsNil() {
-				w.add(4)
+				w.null()
 				break
 			}
 			if !w.enterRef(v.Type(), nativeWalkKey{typ: v.Type(), ptr: v.Pointer()}) {
@@ -597,7 +633,7 @@ func (w *nativeWalker) value(v reflect.Value, quoted bool, levels, refs int) {
 				break
 			}
 			if v.IsNil() {
-				w.add(4)
+				w.null()
 				break
 			}
 			if !w.enterRef(v.Type(), nativeWalkKey{ptr: v.Pointer()}) {
@@ -613,11 +649,11 @@ func (w *nativeWalker) value(v reflect.Value, quoted bool, levels, refs int) {
 			return
 		case reflect.Slice:
 			if v.IsNil() {
-				w.add(4)
+				w.null()
 				break
 			}
 			if info.byteSlice {
-				w.add(base64.StdEncoding.EncodedLen(v.Len()) + 2)
+				w.byteSlice(v)
 				break
 			}
 			if !w.enterRef(v.Type(), nativeWalkKey{ptr: v.Pointer(), len: v.Len()}) {
@@ -638,6 +674,183 @@ func (w *nativeWalker) value(v reflect.Value, quoted bool, levels, refs int) {
 	}
 	w.release(levels, refs)
 }
+
+// The leaf methods below count a leaf in the measuring pass and write it in
+// the writing pass, as the v1 engine's encoder writes it.  quoted is the
+// ",string" option of the struct field that holds the leaf.
+
+func (w *nativeWalker) writeByte(c byte) {
+	if w.write {
+		w.enc.buf.WriteByte(c)
+	}
+}
+
+func (w *nativeWalker) writeString(s string) {
+	if w.write {
+		w.enc.buf.WriteString(s)
+	}
+}
+
+// comma separates the i-th member of a container from the one before it.
+// The measuring pass counts the commas when it enters the container.
+func (w *nativeWalker) comma(i int) {
+	if i > 0 {
+		w.writeByte(',')
+	}
+}
+
+func (w *nativeWalker) null() {
+	w.add(4)
+	w.writeString("null")
+}
+
+func (w *nativeWalker) quote(quoted bool) {
+	if quoted {
+		w.writeByte('"')
+	}
+}
+
+func (w *nativeWalker) boolean(b, quoted bool) {
+	if !w.write {
+		w.add(boolLen(b) + quotedLen(quoted))
+		return
+	}
+	w.quote(quoted)
+	w.writeString(strconv.FormatBool(b))
+	w.quote(quoted)
+}
+
+// number writes text, a JSON number.
+func (w *nativeWalker) number(text []byte, quoted bool) {
+	if !w.write {
+		w.add(len(text) + quotedLen(quoted))
+		return
+	}
+	w.quote(quoted)
+	w.enc.buf.Write(text)
+	w.quote(quoted)
+}
+
+func (w *nativeWalker) float(f float64, bits int, quoted bool) {
+	var b [32]byte
+	w.number(appendNativeFloat(b[:0], f, bits), quoted)
+}
+
+// strValue writes a string.  With quoted it writes the JSON string of the
+// string's JSON text, as the v1 engine does.  The inner text has no <, >
+// or & left, so escaping it again for HTML changes nothing.
+func (w *nativeWalker) strValue(s string, quoted bool) {
+	if !w.write {
+		w.str(s, quotedLen(quoted), false)
+		return
+	}
+	if quoted {
+		w.enc.buf.Write(appendJSONString(w.enc.buf.AvailableBuffer(), appendJSONString(nil, s)))
+		return
+	}
+	w.enc.buf.Write(appendJSONString(w.enc.buf.AvailableBuffer(), s))
+}
+
+// key writes a map key and its colon.
+func (w *nativeWalker) key(name string) {
+	if !w.write {
+		w.str(name, 1, true)
+		return
+	}
+	w.enc.buf.Write(append(appendJSONString(w.enc.buf.AvailableBuffer(), name), ':'))
+}
+
+// byteSlice writes a []byte as a base64 string.
+func (w *nativeWalker) byteSlice(v reflect.Value) {
+	if !w.write {
+		w.add(base64.StdEncoding.EncodedLen(v.Len()) + 2)
+		return
+	}
+	b := append(w.enc.buf.AvailableBuffer(), '"')
+	b = base64.StdEncoding.AppendEncode(b, v.Bytes())
+	w.enc.buf.Write(append(b, '"'))
+}
+
+func quotedLen(quoted bool) int {
+	if quoted {
+		return 2
+	}
+	return 0
+}
+
+// writeMarshaler writes a value through its MarshalJSON method (text false)
+// or MarshalText method (text true), and calls the method once.
+//
+// libjson quotes the text of a MarshalText method itself, with
+// appendJSONString.  The two engines quote text that is not valid UTF-8
+// differently: the v1 engine writes each bad byte as the escape \ufffd, the
+// v2 engine as a raw U+FFFD, which a valid text can hold too.  Neither the
+// walk nor the output can find the bad bytes without a second call of the
+// method (luthersystems/elps#950).  appendJSONString writes the v1 engine's
+// bytes on both engines.
+//
+// encoding/json still writes the output of a MarshalJSON method, because it
+// checks and compacts the method's JSON.  It gets the method alone, bound to
+// v.Addr() when addr is set: the receiver the v1 engine uses in place.
+func (w *nativeWalker) writeMarshaler(v reflect.Value, addr, text bool) {
+	m := v
+	if addr {
+		m = v.Addr()
+	}
+	if (m.Kind() == reflect.Pointer || m.Kind() == reflect.Interface) && m.IsNil() {
+		w.null()
+		return
+	}
+	buf := &w.enc.buf
+	if text {
+		tm, ok := reflect.TypeAssert[encoding.TextMarshaler](m)
+		if !ok {
+			w.null()
+			return
+		}
+		b, err := tm.MarshalText()
+		if err != nil {
+			w.fail(nativeMarshalError(&json.MarshalerError{Type: m.Type(), Err: err}))
+			return
+		}
+		buf.Write(appendJSONString(buf.AvailableBuffer(), b))
+		return
+	}
+	jm, ok := reflect.TypeAssert[json.Marshaler](m)
+	if !ok {
+		w.null()
+		return
+	}
+	mark := buf.Len()
+	// encoding/json gets the method, not the value.  Given an interface
+	// that holds a nil pointer, it would write null at the top level,
+	// where the v1 engine calls the method in place.  It still checks and
+	// compacts what the method returns.
+	//
+	// The wrapper is the encoder's own, and the json.Encoder stays on the
+	// stack, so a MarshalJSON value allocates no more than it did when
+	// encoding/json wrote the whole native.  A wrapper made here would be
+	// copied to the heap at each call, because Encode keeps its argument.
+	wrap := w.enc.marshalJSON
+	if wrap == nil {
+		wrap = new(nativeMarshalJSON)
+		w.enc.marshalJSON = wrap
+	}
+	wrap.m = jm
+	err := json.NewEncoder(buf).Encode(wrap)
+	wrap.m = nil
+	if err != nil {
+		buf.Truncate(mark)
+		w.fail(nativeMarshalError(err))
+		return
+	}
+	buf.Truncate(buf.Len() - 1) // drop Encode's trailing newline
+}
+
+// nativeMarshalJSON hands one MarshalJSON method to encoding/json.
+type nativeMarshalJSON struct{ m json.Marshaler }
+
+func (n *nativeMarshalJSON) MarshalJSON() ([]byte, error) { return n.m.MarshalJSON() }
 
 // refuseType refuses a value whose type has no JSON form.
 func (w *nativeWalker) refuseType(t reflect.Type) {
@@ -774,11 +987,12 @@ func (w *nativeWalker) findRef(key nativeWalkKey) int {
 	return -1
 }
 
-// marshaler counts a value encoding/json hands to MarshalJSON (text false)
-// or MarshalText (text true), with v.Addr() as the receiver when addr is set.
+// marshaler counts or writes a value the v1 engine hands to MarshalJSON
+// (text false) or MarshalText (text true), with v.Addr() as the receiver
+// when addr is set.
 //
-// The walk does not call value marshalers: encoding/json calls each one,
-// once.  Most marshalers' output is unknown until they run, so they count as
+// The measuring pass does not call value marshalers: the writing pass calls
+// each one, once.  Most marshalers' output is unknown until they run, so they count as
 // their smallest output: one byte of JSON, or an empty string.  The few whose
 // size is known from the value -- this package's own messages,
 // json.RawMessage and math/big's numbers -- count as that size.  math/big
@@ -786,12 +1000,16 @@ func (w *nativeWalker) findRef(key nativeWalkKey) int {
 // intermediate grows with the exponent, and that is charged and capped here
 // before it runs.
 func (w *nativeWalker) marshaler(v reflect.Value, addr, text bool) {
+	if w.write {
+		w.writeMarshaler(v, addr, text)
+		return
+	}
 	m := v
 	if addr {
 		m = v.Addr()
 	}
 	if (m.Kind() == reflect.Pointer || m.Kind() == reflect.Interface) && m.IsNil() {
-		w.add(4) // null
+		w.null()
 		return
 	}
 	if m.Kind() == reflect.Interface {
@@ -800,6 +1018,14 @@ func (w *nativeWalker) marshaler(v reflect.Value, addr, text bool) {
 	minLen := 1
 	if text {
 		minLen = 2
+	}
+	if m.Kind() == reflect.Pointer && m.IsNil() {
+		// An interface with the method holds a nil pointer.  The v1
+		// engine calls the method on it, and so does the writing pass.
+		// The value cannot be read to size the output, so it counts as
+		// the smallest one (luthersystems/elps#950).
+		w.add(minLen)
+		return
 	}
 	if !sizedMarshalerTypes[m.Type()] {
 		w.add(minLen)
@@ -952,9 +1178,9 @@ func bigFloatWork(x *big.Float) int {
 	return int(digits)
 }
 
-// nativeFloatLen is the length of encoding/json's text for f.
-func nativeFloatLen(f float64, bits int) int {
-	var b [32]byte
+// appendNativeFloat appends encoding/json's text for f, a float of bits
+// bits.
+func appendNativeFloat(b []byte, f float64, bits int) []byte {
 	abs := math.Abs(f)
 	format := byte('f')
 	if abs != 0 {
@@ -962,12 +1188,13 @@ func nativeFloatLen(f float64, bits int) int {
 			format = 'e'
 		}
 	}
-	out := strconv.AppendFloat(b[:0], f, format, -1, bits)
-	n := len(out)
-	if format == 'e' && n >= 4 && out[n-4] == 'e' && out[n-3] == '-' && out[n-2] == '0' {
-		n--
+	out := strconv.AppendFloat(b, f, format, -1, bits)
+	// Shorten e-09 to e-9, as encoding/json does.
+	if n := len(out); format == 'e' && n >= 4 && out[n-4] == 'e' && out[n-3] == '-' && out[n-2] == '0' {
+		out[n-2] = out[n-1]
+		out = out[:n-1]
 	}
-	return n
+	return out
 }
 
 // isValidJSONNumber reports whether s matches the JSON number grammar.
@@ -1081,11 +1308,31 @@ var errNativeTooDeep = fmt.Errorf("value nests more than %d levels deep", native
 // jsonNestingLimit, which this package would not load back.
 var errNativeJSONTooDeep = fmt.Errorf("JSON nests more than %d levels deep", jsonNestingLimit)
 
-// boundNative walks native, the value of a native LVal, and returns the error
-// that refuses it, or nil when encoding/json may marshal it.
-func (enc *encoder) boundNative(native any, b encodeBudget) error {
+// boundNative walks native, the value of a native LVal, in the measuring
+// pass.  It returns the size it counted, and the error that refuses the
+// native, or nil when writeNative may write it.
+func (enc *encoder) boundNative(native any, b encodeBudget) (int, error) {
 	var w nativeWalker
 	w.init(enc, b)
+	w.run(native)
+	return w.est, w.err
+}
+
+// writeNative writes native, which boundNative has passed, to enc.buf.
+//
+// It is the walk again, in the writing pass: it writes what the measuring
+// pass counted, in the same order.  The measuring pass calls no value
+// marshaler, so each one runs once, here.  writeNative charges no steps and
+// polls no context, as encoding/json did when it wrote natives: boundNative
+// has charged for the output already.
+//
+// est is the size boundNative counted.  It is exact but for the output of
+// marshalers, which it counts at their smallest.  So the buffer grows once
+// for most natives, as it did when encoding/json wrote a whole native to
+// its own buffer and copied it in.
+func (enc *encoder) writeNative(native any, est int) error {
+	enc.buf.Grow(est)
+	w := nativeWalker{enc: enc, limit: math.MaxInt, write: true}
 	w.run(native)
 	return w.err
 }

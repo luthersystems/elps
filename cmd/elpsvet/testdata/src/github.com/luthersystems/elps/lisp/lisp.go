@@ -12,7 +12,11 @@
 // takes its taint from the struct fields it does own.
 package lisp
 
-import "github.com/luthersystems/elps/parser/token"
+import (
+	"unsafe"
+
+	"github.com/luthersystems/elps/parser/token"
+)
 
 type LType int
 
@@ -34,8 +38,13 @@ type LFunType int
 type LBuiltin func(env *LEnv, args *LVal) *LVal
 
 type LVal struct {
-	Native  interface{}
-	source  *token.Location
+	Native interface{}
+	source *token.Location
+	// word mirrors the real LVal.source since luthersystems/elps#947: an
+	// untyped word that a composite literal fills with locWord(loc)
+	// (nodeaux.go in this stub).  The historical fixtures keep the typed
+	// source field above.
+	word    unsafe.Pointer
 	Str     string
 	Cells   []*LVal
 	Type    LType

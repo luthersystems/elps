@@ -24,6 +24,7 @@ import (
 //   - string:    split, case-fold, trim, prefix tests and joins over 80 lines.
 //   - recursion: closures with set!, compose, a depth-8 tree built and summed
 //     with foldl, and a labels Ackermann.
+//   - library:   math, elpspath and base64 builtin calls in a loop.
 //   - template:  per-request shape -- Template.NewVM plus LoadString of a
 //     three-call JSON transaction against an application package.
 //
@@ -111,6 +112,22 @@ const wlRecursionProgram = `
       (+ (funcall c 0) (tree-sum (tree 8)) (ack 2 3)))))
 `
 
+// wlLibraryProgram calls library builtins in a loop: math, elpspath and
+// base64.  It measures the cost of a library builtin call itself.
+const wlLibraryProgram = `
+(set 'lib-doc (sorted-map "a" (sorted-map "b" (vector 1 2 3)) "n" 5))
+(defun lib-work ()
+  (let ((acc 0) (s ""))
+    (dotimes (i 200)
+      (set! acc (+ acc
+                   (math:floor (math:abs (- i 100)))
+                   (math:ceil (mod i 7))
+                   (elpspath:? lib-doc "a" "b" (mod i 3))
+                   (elpspath:? lib-doc "n")))
+      (set! s (base64:encode (to-bytes "abc"))))
+    (+ acc (length s))))
+`
+
 // wlTemplateSetup is the "chaincode" loaded once into a template; each
 // iteration forks a VM and runs a transaction against it.
 const wlTemplateSetup = `
@@ -190,6 +207,7 @@ func BenchmarkWorkload(b *testing.B) {
 	b.Run("sortedmap", func(b *testing.B) { wlRun(b, wlMapProgram, "(map-work)") })
 	b.Run("string", func(b *testing.B) { wlRun(b, wlStringProgram, "(string-work)") })
 	b.Run("recursion", func(b *testing.B) { wlRun(b, wlRecursionProgram, "(rec-work)") })
+	b.Run("library", func(b *testing.B) { wlRun(b, wlLibraryProgram, "(lib-work)") })
 	b.Run("template", func(b *testing.B) {
 		env := newTemplateTestEnv(b)
 		env.Runtime.Stderr = &bytes.Buffer{}

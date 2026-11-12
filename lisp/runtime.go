@@ -49,6 +49,7 @@ type Runtime struct {
 	settings               map[string]bool           // Per-VM library flags; see Setting.
 	values                 map[string]any            // Per-VM value settings; see SetSettingValue.
 	vmValues               *vmValueTable             // Per-VM Lisp values; see SetVMValue.
+	vmCache                map[any]any               // Go values a library cached on this VM; see SetVMCache.
 	conditionParents       map[string]conditionEntry // The hierarchy from DefineCondition; see conditionParentsShared.
 	conditionStack         []*LVal
 	callLists              callLists     // Free call lists of this VM; see lisp/calllist.go.

@@ -16,7 +16,7 @@ import (
 	"github.com/luthersystems/elps/parser"
 )
 
-func chargeEnv(t *testing.T) *lisp.LEnv {
+func chargeEnv(t testing.TB) *lisp.LEnv {
 	t.Helper()
 	env := lisp.NewEnv(nil)
 	env.Runtime.Reader = parser.NewReader()

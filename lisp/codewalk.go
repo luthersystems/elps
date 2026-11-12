@@ -977,7 +977,7 @@ func (w *CodeWalker) special(v *LVal, op string, kind formKind, depth int) *LVal
 			if out := b.done(); out != v && len(cells) == 2 {
 				if formals := exprLambdaList(cells[1]); formals != nil {
 					lowered := Cells{Symbol(DefaultLangPackage + ":lambda"), formals, out.Cells[1]}.SExpr()
-					lowered.source = v.loc().Copy()
+					lowered.setPlainLoc(v.loc().Copy())
 					return lowered
 				}
 			}
@@ -1512,12 +1512,13 @@ func (b *rebuild) done() *LVal {
 // rebuiltList returns a fresh, unsealed list over cells with orig's type,
 // quoting and (a copy of its) source location, as rebuild.done does.
 func rebuiltList(orig *LVal, cells []*LVal) *LVal {
-	return &LVal{
+	v := &LVal{
 		Type:   orig.Type,
 		Cells:  cells,
 		quoted: orig.quoted,
-		source: orig.loc().Copy(),
 	}
+	v.setPlainLoc(orig.loc().Copy())
+	return v
 }
 
 // MacroExpandAll returns form with every macro call expanded, in env: the

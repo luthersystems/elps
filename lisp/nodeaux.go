@@ -3,229 +3,251 @@
 package lisp
 
 import (
+	"unsafe"
+
 	"github.com/luthersystems/elps/internal/fmtmeta"
-	"github.com/luthersystems/elps/internal/locaux"
 	"github.com/luthersystems/elps/parser/token"
 )
 
-// nodeAux is the tooling record of one node that has the debugger's
-// macro-expansion record, with the formatter's metadata beside it.  A node
-// with metadata only has the *fmtmeta.Meta as its record (see newNodeAux).
+// A node's tooling record is its formatter metadata and the debugger's
+// macro-expansion record.  Both are nil in production.
 //
-// WHY IT IS NOT TWO FIELDS OF LVal.  Both are nil in production, and with
-// them LVal was 112 bytes.  Without them it is 96, one allocator size class
-// down, for every value the interpreter allocates (luthersystems/elps#944).
-// The record therefore rides on the node's Location (token.Location's aux
-// slot), and LVal keeps one pointer, source, for all three.
+// WHY THE RECORD HAS NO FIELD OF ITS OWN.  With the two records as pointer
+// fields LVal was 112 bytes.  Without them it is 96, one allocator size
+// class down, for every value the interpreter allocates
+// (luthersystems/elps#944).  So LVal has one pointer word, source, for the
+// location and the record together.
 //
-// WHO OWNS A RECORD.  A Location can be shared by nodes that are unrelated
-// (every node of one macro expansion shares the call site), so the slot
-// alone cannot say whose record it holds.  The hasAux flag on the LVal
-// does: a node reads the record on its Location only when its own flag is
-// set.  A header copy (`*cp = *v`: Quote, Splice, a function reference)
-// copies the flag with the source pointer and so shares the record, exactly
-// as it shared the two pointers before.  A node that only borrows the
-// Location (`x.source = y.source`) has no flag and sees no record, also as
-// before.
+// WHY THE RECORD IS NOT ON THE LOCATION.  #944 first kept the record in a
+// slot on token.Location.  That made every Location 96 bytes instead of 80,
+// and code that allocates or copies many locations (analysis, lint, a cold
+// durable function name) paid for it with no record anywhere in sight
+// (luthersystems/elps#947).  Locations stay 80 bytes now, and the record
+// lives in a carrier that only a node with a record has.
 //
-// A RECORD IS IMMUTABLE once it is on a Location.  A header copy cannot
-// change its own record through the shared Location without changing its
-// sibling's, so every change gives the node a new record on a new Location
-// (setNodeAux).  The one exception is the format-preserving parser, which
-// must keep the Location pointer it handed to SetSource: it writes the
-// record onto that Location in place, while it still owns the tree.
+// THE SOURCE WORD.  source is an unsafe.Pointer, and auxKind says what it
+// points to:
 //
-// A NODE WITHOUT A LOCATION can still carry a record (a macro expanded from
-// Go-built forms under a debugger).  It needs a Location to hold the slot,
-// so it gets an empty carrier and the auxNoLoc flag, and (*LVal).loc reports
-// nil for it.  Kernel code reads a node's location through loc for this
-// reason, never through the source field.
+//	auxNone      a *token.Location, or nil (every node in production)
+//	auxMeta      a *metaAux: the location and the metadata in one object
+//	auxCarrier   a *nodeAux: the location and two record pointers
+//
+// The word is untyped because Go has no one-word field that holds one of
+// two pointer types; an interface is two words, and a second pointer field
+// is the 112-byte LVal again.  The garbage collector scans an
+// unsafe.Pointer as a pointer, so the pointee stays alive whatever its
+// type.  The only conversions are in loc, metaAuxOf, nodeAuxOf and the
+// setters in this file, and each is chosen by auxKind, which the same
+// statement that writes source writes.  No other code writes source or
+// auxKind (TestNodeAuxSourceWritesStayInNodeAux checks that), so a
+// carrier is never read as a Location or a Location as a carrier.
+//
+// WHY TWO CARRIERS.  The format-preserving parser gives most nodes
+// metadata and none a macro-expansion record.  Before #944 that cost one
+// metadata allocation per node, so a carrier and a separate metadata object
+// would be a second allocation per node (#944 measured 7 to 8% more
+// objects in BenchmarkMutationChecksScaling).  metaAux holds the metadata
+// by value: one allocation, as before.  It is in the 128-byte class, 16
+// bytes above the metadata alone, which is what the Location slot cost the
+// same node, and it leaves out the macro-expansion pointer to stay there.
+// Every other shape of record (a debugger record, metadata the caller
+// allocated) takes the 24-byte nodeAux.
+//
+// WHO OWNS A RECORD.  A carrier is reachable only from the node it was made
+// for and from that node's header copies (`*cp = *v`: Quote, Splice, a
+// function reference), which copy source and auxKind together and so share
+// the record, exactly as they shared the two pointer fields.  A node that
+// only borrows another's location (`x.setPlainLoc(y.loc())`) gets the
+// Location and not the record, also as before.
+//
+// A CARRIER IS IMMUTABLE once a node holds it.  A header copy cannot change
+// its record or location in a shared carrier without changing its
+// sibling's, so every change gives the node a new carrier.  The metadata a
+// carrier points to is not frozen: it is the same object the two fields
+// shared, and the format-preserving parser writes it while it owns the
+// tree.  The Location is never written by this file, so SetSource stores
+// the pointer it is given even for a node with a record, and the parser's
+// later end-position writes through that pointer reach the node.
+//
+// A NODE WITHOUT A LOCATION can carry a record (a macro expanded from
+// Go-built forms under a debugger); its carrier's loc is nil.  Kernel code
+// reads a node's location through loc for this reason, never through the
+// source word.
+type auxKind uint8
+
+const (
+	auxNone auxKind = iota
+	auxMeta
+	auxCarrier
+)
+
+// metaAux is the carrier of a node whose only record is formatter metadata
+// that package lisp allocated (ensureFmtMeta).  The metadata is part of the
+// carrier, so the node's record costs one allocation (see auxKind).
+type metaAux struct {
+	loc  *token.Location
+	meta fmtmeta.Meta
+}
+
+// nodeAux is the carrier of every other record: a macro-expansion record,
+// or metadata the caller allocated (Copy's private copy is built in place
+// instead; the macro stamp shares the original's metadata).
 type nodeAux struct {
+	loc            *token.Location
 	meta           *fmtmeta.Meta
 	macroExpansion *macroExpansionInfo
 }
 
-// locAux and setLocAux read and write a Location's aux slot.  Package token
-// injects them through internal/locaux; see that package for why.
-var (
-	locAux    = mustLocAuxHook[func(*token.Location) any](locaux.Get)
-	setLocAux = mustLocAuxHook[func(*token.Location, any)](locaux.Set)
-)
+// metaAuxOf and nodeAuxOf read the carrier v.source points to.  The caller
+// has tested v.auxKind; the conversion is valid only for the kind named.
+func (v *LVal) metaAuxOf() *metaAux {
+	return (*metaAux)(v.source)
+}
 
-// mustLocAuxHook recovers one typed accessor from its untyped slot.
+func (v *LVal) nodeAuxOf() *nodeAux {
+	return (*nodeAux)(v.source)
+}
+
+// loc returns v's location, or nil when v has none.  The production path
+// is one byte compare and a conversion.
 //
-// NOT LISP-REACHABLE (luthersystems/elps#367): package lisp imports package
-// token, whose init fills the slots before this package's variables are
-// initialized.  A panic here is a broken build, not program input.
-func mustLocAuxHook[F any](slot any) F {
-	f, ok := slot.(F)
-	if !ok {
-		panic("lisp: package token did not inject the Location aux accessors")
-	}
-	return f
-}
-
-// loc returns v's location, or nil when v has none.  It differs from the
-// source field only for a node whose source is a record carrier (see
-// nodeAux).
+// It is kept this small on purpose: loc is inlined into Source, and Source
+// into callers such as astutil.SourceLoc.  With the carrier switch inline,
+// SourceLoc grew past the inlining budget, its result Location escaped to
+// the heap, and the lint mutation checks allocated 3% more objects.
 func (v *LVal) loc() *token.Location {
-	if v.auxNoLoc {
-		return nil
+	if v.auxKind == auxNone {
+		return (*token.Location)(v.source)
 	}
-	return v.source
+	return v.carrierLoc()
 }
 
-// nodeAuxRecord returns v's tooling record as the slot holds it, or nil.
-// The flag test comes first so that the production path is one byte
-// compare.
-func (v *LVal) nodeAuxRecord() any {
-	if !v.hasAux {
-		return nil
+// carrierLoc is the slow half of loc, for a node with a tooling record.
+// It must not be inlined into loc (see loc); only tooling builds take it.
+//
+//go:noinline
+func (v *LVal) carrierLoc() *token.Location {
+	if v.auxKind == auxMeta {
+		return v.metaAuxOf().loc
 	}
-	return locAux(v.source)
+	return v.nodeAuxOf().loc
 }
 
-// newNodeAux returns the record for the two parts.  A record with only
-// formatter metadata is the *fmtmeta.Meta itself, not a nodeAux that points
-// to it: the format-preserving parser gives most nodes metadata and none a
-// macro-expansion record, and a second object per node made that parse
-// allocate 7 to 8% more objects (BenchmarkMutationChecksScaling in lint).
-// Both parts nil is no record.
-func newNodeAux(meta *fmtmeta.Meta, mexp *macroExpansionInfo) any {
-	switch {
-	case mexp != nil:
-		return &nodeAux{meta: meta, macroExpansion: mexp}
-	case meta != nil:
-		return meta
-	default:
-		return nil
-	}
+// locWord is the source word for the location loc and no tooling record.
+// A composite literal that gives an LVal a location without a record sets
+// source to locWord(loc) and leaves auxKind at its zero, auxNone; that
+// keeps the literal one statement on the hot paths that build one (a
+// lambda, an error).  Every other write goes through a setter below.
+func locWord(loc *token.Location) unsafe.Pointer {
+	return unsafe.Pointer(loc) //nolint:gosec // G103: the conversion auxNone names (see auxKind)
 }
 
-// nodeAuxParts splits a record that newNodeAux made into its two parts.
-func nodeAuxParts(rec any) (*fmtmeta.Meta, *macroExpansionInfo) {
-	switch rec := rec.(type) {
-	case *fmtmeta.Meta:
-		return rec, nil
-	case *nodeAux:
-		return rec.meta, rec.macroExpansion
-	default:
-		return nil, nil
-	}
+// hasAux reports that v carries a tooling record.
+func (v *LVal) hasAux() bool {
+	return v.auxKind != auxNone
 }
 
 // fmtMeta returns v's formatter metadata, or nil.
 func (v *LVal) fmtMeta() *fmtmeta.Meta {
-	meta, _ := nodeAuxParts(v.nodeAuxRecord())
-	return meta
+	switch v.auxKind {
+	case auxMeta:
+		return &v.metaAuxOf().meta
+	case auxCarrier:
+		return v.nodeAuxOf().meta
+	default:
+		return nil
+	}
 }
 
 // macroExp returns v's macro-expansion record, or nil.
 func (v *LVal) macroExp() *macroExpansionInfo {
-	_, mexp := nodeAuxParts(v.nodeAuxRecord())
-	return mexp
+	if v.auxKind != auxCarrier {
+		return nil
+	}
+	return v.nodeAuxOf().macroExpansion
 }
 
-// setNodeAux replaces v's tooling record.  v must be a header the caller
-// may write.  A header that shares v's Location keeps the record it had.
-//
-// inPlace asks for the record to go on v's current Location object.  Only
-// the format-preserving parser passes it: the parser keeps that pointer and
-// writes end positions through it after the node exists.  It is honored
-// only when the Location carries no record yet.
-func (v *LVal) setNodeAux(meta *fmtmeta.Meta, mexp *macroExpansionInfo, inPlace bool) {
+// setPlainLoc gives v the location loc and no tooling record.  It is the
+// field write for a header the caller may write; kernel code that used to
+// assign the source field calls it, because the source word must not be
+// written apart from auxKind (see auxKind).
+func (v *LVal) setPlainLoc(loc *token.Location) {
 	checkNotSharedInt(v)
-	loc := v.loc()
+	v.source = locWord(loc) //elps:mutates the audited location setter; callers pass a header they own
+	v.auxKind = auxNone     //elps:mutates the audited location setter; callers pass a header they own
+}
+
+// setNodeAux gives v the location loc and the record (meta, mexp).  v must
+// be a header the caller may write.  A header that shares v's carrier keeps
+// the one it had.
+func (v *LVal) setNodeAux(loc *token.Location, meta *fmtmeta.Meta, mexp *macroExpansionInfo) {
 	if meta == nil && mexp == nil {
-		// The Location may still hold the record for a sibling header,
-		// so the record stays where it is and v moves to a plain copy.
-		// Clearing the flag alone would stop v reading the record but
-		// keep it reachable from v: a template header that drops its
-		// debugger record must not keep the source VM's values alive.
-		if loc != nil && locAux(loc) != nil {
-			loc = loc.Copy()
-		}
-		v.source = loc     //elps:mutates the audited setter for the tooling record; callers pass a header they own
-		v.hasAux = false   //elps:mutates the audited setter for the tooling record; callers pass a header they own
-		v.auxNoLoc = false //elps:mutates the audited setter for the tooling record; callers pass a header they own
+		v.setPlainLoc(loc)
 		return
 	}
-	noLoc := false
-	switch {
-	case loc == nil:
-		loc = &token.Location{}
-		noLoc = true
-	case inPlace && !v.hasAux && locAux(loc) == nil:
-	default:
-		loc = loc.Copy()
-	}
-	setLocAux(loc, newNodeAux(meta, mexp))
-	v.source = loc     //elps:mutates the audited setter for the tooling record; callers pass a header they own
-	v.hasAux = true    //elps:mutates the audited setter for the tooling record; callers pass a header they own
-	v.auxNoLoc = noLoc //elps:mutates the audited setter for the tooling record; callers pass a header they own
+	checkNotSharedInt(v)
+	//elps:mutates the audited setter for the tooling record; callers pass a header they own
+	v.source = unsafe.Pointer(&nodeAux{loc: loc, meta: meta, macroExpansion: mexp}) //nolint:gosec // G103: the conversion auxCarrier names (see auxKind)
+	v.auxKind = auxCarrier                                                          //elps:mutates the audited setter for the tooling record; callers pass a header they own
 }
 
-// setFmtMeta sets v's formatter metadata and keeps its macro-expansion
-// record.
-func (v *LVal) setFmtMeta(m *fmtmeta.Meta, inPlace bool) {
-	if !v.hasAux && m == nil {
+// setFmtMeta sets v's formatter metadata to m and keeps its location and
+// its macro-expansion record.
+func (v *LVal) setFmtMeta(m *fmtmeta.Meta) {
+	if !v.hasAux() && m == nil {
 		return
 	}
-	v.setNodeAux(m, v.macroExp(), inPlace)
+	v.setNodeAux(v.loc(), m, v.macroExp()) //elps:aliases v keeps its own location; only the record changes
 }
 
-// setMacroExp sets v's macro-expansion record and keeps its formatter
-// metadata.
+// ensureFmtMeta returns v's formatter metadata, first giving v empty
+// metadata if it has none.  The new metadata is part of a metaAux, so a
+// node the format-preserving parser stamps costs one allocation (see
+// auxKind).  v must be a header the caller may write.
+func (v *LVal) ensureFmtMeta() *fmtmeta.Meta {
+	if m := v.fmtMeta(); m != nil {
+		return m
+	}
+	if mexp := v.macroExp(); mexp != nil {
+		// Metadata on a debugger-stamped node: rare enough (a format
+		// tree is never evaluated) that a separate object is fine.
+		m := &fmtmeta.Meta{}
+		v.setNodeAux(v.loc(), m, mexp) //elps:aliases v keeps its own location; only the record changes
+		return m
+	}
+	checkNotSharedInt(v)
+	c := &metaAux{loc: v.loc()}
+	//elps:mutates the audited setter for the tooling record; callers pass a header they own
+	v.source = unsafe.Pointer(c) //nolint:gosec // G103: the conversion auxMeta names (see auxKind)
+	v.auxKind = auxMeta          //elps:mutates the audited setter for the tooling record; callers pass a header they own
+	return &c.meta
+}
+
+// setMacroExp sets v's macro-expansion record and keeps its location and
+// its formatter metadata.
 func (v *LVal) setMacroExp(mexp *macroExpansionInfo) {
-	if !v.hasAux && mexp == nil {
+	if !v.hasAux() && mexp == nil {
 		return
 	}
-	v.setNodeAux(v.fmtMeta(), mexp, false)
+	v.setNodeAux(v.loc(), v.fmtMeta(), mexp) //elps:aliases v keeps its own location; only the record changes
 }
 
 // setLoc sets v's location and keeps its tooling record.  v must be a
 // header the caller may write.  For a node without a record, which is every
 // node in production, it is the plain field write.
-func (v *LVal) setLoc(loc *token.Location) {
-	checkNotSharedInt(v)
-	if !v.hasAux {
-		v.source = loc //elps:mutates the audited location setter; callers pass a header they own
-		return
-	}
-	v.moveNodeAux(loc)
-}
-
-// moveNodeAux is the slow half of setLoc: it gives v the location loc and
-// moves v's record onto it.
 //
-// The record goes onto loc itself when it can, because SetSource promises
-// to store the pointer it is given and the format-preserving parser relies
-// on that.  loc is copied first when it already holds another node's
-// record, and when the record is a debugger's: a location under a debugger
-// may be shared with nodes other goroutines read, and a write to its slot
-// would race with them.
-func (v *LVal) moveNodeAux(loc *token.Location) {
-	checkNotSharedInt(v)
-	aux := v.nodeAuxRecord()
-	if aux == nil {
-		v.source = loc     //elps:mutates the audited location setter; callers pass a header they own
-		v.hasAux = false   //elps:mutates the audited location setter; callers pass a header they own
-		v.auxNoLoc = false //elps:mutates the audited location setter; callers pass a header they own
+// The record moves to a new carrier rather than having its loc rewritten:
+// a header copy may share the carrier (see auxKind).  The new carrier
+// points to the same metadata, which is what a header copy that took a
+// location of its own shared before (the parser's Quote path relies on it).
+// That is the one place this design allocates where the Location slot did
+// not: a quoted form in a format-preserving parse costs a 24-byte nodeAux,
+// about 1.4% more objects in BenchmarkMutationChecksScaling, against 2 to
+// 4% fewer bytes there and 16 fewer bytes on every Location everywhere.
+func (v *LVal) setLoc(loc *token.Location) {
+	if !v.hasAux() {
+		v.setPlainLoc(loc)
 		return
 	}
-	noLoc := false
-	switch {
-	case loc == nil:
-		loc = &token.Location{}
-		noLoc = true
-	case locAux(loc) != nil:
-		loc = loc.Copy()
-	default:
-		if _, mexp := nodeAuxParts(aux); mexp != nil {
-			loc = loc.Copy()
-		}
-	}
-	setLocAux(loc, aux)
-	v.source = loc     //elps:mutates the audited location setter; callers pass a header they own
-	v.auxNoLoc = noLoc //elps:mutates the audited location setter; callers pass a header they own
+	v.setNodeAux(loc, v.fmtMeta(), v.macroExp())
 }

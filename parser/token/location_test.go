@@ -3,9 +3,22 @@
 package token
 
 import (
-	"fmt"
 	"testing"
+	"unsafe"
 )
+
+// TestLocationSize pins Location at 80 bytes, an allocator size class of
+// its own.  Parsers allocate one per token and analysis copies one per
+// reference, so a single extra word puts every location in the 96-byte
+// class.  luthersystems/elps#944 added such a word (a slot for a node's
+// tooling record) and analysis, lint and a cold libjson durable name paid
+// 5 to 18% for it (luthersystems/elps#947); package lisp now keeps the
+// record off the Location (see auxKind in lisp/nodeaux.go).
+func TestLocationSize(t *testing.T) {
+	if got := unsafe.Sizeof(Location{}); got != 80 {
+		t.Errorf("unsafe.Sizeof(Location{}) = %d, want 80", got)
+	}
+}
 
 // TestNativeLocationReturnsAValue pins the property that makes it safe to
 // call from anywhere: NativeLocation returns a Location, not a *Location, so
@@ -69,21 +82,5 @@ func TestLocationCopyPreservesNil(t *testing.T) {
 	var loc *Location
 	if got := loc.Copy(); got != nil {
 		t.Errorf("(*Location)(nil).Copy() = %+v, want nil", got)
-	}
-}
-
-// A Location value under %v and %+v shows the unexported aux slot, first.
-// The slot must be first (see Location), so this pins what a caller that
-// prints the struct, not String, now gets.
-func TestLocationFormat(t *testing.T) {
-	loc := Location{File: "f.lisp", Pos: 3, Line: 1, Col: 4}
-	if got, want := fmt.Sprintf("%v", loc), "{<nil> f.lisp  3 1 4 0 0 0}"; got != want {
-		t.Errorf("%%v = %q, want %q", got, want)
-	}
-	if got, want := fmt.Sprintf("%+v", loc), "{aux:<nil> File:f.lisp Path: Pos:3 Line:1 Col:4 EndPos:0 EndLine:0 EndCol:0}"; got != want {
-		t.Errorf("%%+v = %q, want %q", got, want)
-	}
-	if got, want := fmt.Sprintf("%v", &loc), "f.lisp:1:4"; got != want {
-		t.Errorf("%%v of a pointer = %q, want %q", got, want)
 	}
 }

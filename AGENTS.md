@@ -61,19 +61,22 @@ in `elps.yml` runs `make test` plus libjson's race and elpscheck runs on v1
 | Typed, durable and canonical encodings, and values decoded by `json:load-*` | Yes |
 | A native Go value: which natives a dump refuses and the error text (key kinds, cycles, nesting past 10000, `json.Number`, `json.RawMessage`, `time.Time`, marshal method errors) | Yes (`TestNativeResultsAreEngineIndependent`) |
 | A native Go value with invalid UTF-8 in a string or a map key, or a struct tag with a `format:` option or a name the v1 engine does not accept: the walk refuses it | Yes (`TestNativeResultsAreEngineIndependent`) |
-| A native Go value whose `MarshalText` method, in value position, returns invalid UTF-8 (`\ufffd` on v1, a raw U+FFFD on v2). The walk calls no marshal method of a value | No (`TestNativeTextMarshalerInvalidUTF8`) |
+| A native Go value whose `MarshalText` method, in value position, returns invalid UTF-8: libjson quotes the text, so each bad byte is `\ufffd` | Yes (`TestNativeTextMarshalerIsEngineIndependent`, luthersystems/elps#950) |
 | Error text of `json:load-*` for a number that does not fit a float | Yes (`TestLoadFloatOverflowTextIsEngineIndependent`) |
 | Error text of `json:load-*` for malformed JSON: libjson finds the fault again and words it (`syntax_reason.go`) | Yes (`TestLoadSyntaxErrorTextIsEngineIndependent`, `FuzzSyntaxReasonMatchesEngine`) |
 
-The libjson native walk (`native_walk.go`) decides what a native dump does:
-it refuses, with libjson's own error, every native the two engines treat
-differently, and `nativeMarshalError` rewords what a marshal method reports.
-A new native case must get one result there, and a row in
-`TestNativeResultsAreEngineIndependent`.
+No result of libjson depends on the engine. The libjson native walk
+(`native_walk.go`) decides what a native dump does: its first pass refuses,
+with libjson's own error, every native the two engines treat differently.
+Its second pass writes the native as the v1 engine does, and gives only
+`MarshalJSON` values to encoding/json. `nativeMarshalError` rewords what a
+marshal method reports. A new native case must get one result there, and a
+row in `TestNativeResultsAreEngineIndependent`.
 
-A test that pins a per-engine result asks `libjson.JSONV2EngineForTest()`
-(`lisp/lisplib/libjson/jsonengine_test.go`). Do not hand-copy v1 error text
-into libjson to hide a difference. Details: luthersystems/elps#928.
+`libjson.JSONV2EngineForTest()` (`lisp/lisplib/libjson/jsonengine_test.go`)
+tells a test which engine it runs on, for example to use encoding/json as a
+reference only on v1. Do not hand-copy v1 error text into libjson to hide a
+difference. Details: luthersystems/elps#928.
 
 ### golangci-lint version skew
 

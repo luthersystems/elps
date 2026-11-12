@@ -117,7 +117,7 @@ func TestWalkerBehaviorOracleRenderNegativeControls(t *testing.T) {
 			return s, ok
 		}},
 		{"source metadata mutation", "source changed", func(s string, ok bool, v *LVal, _, _ int) (string, bool) {
-			v.source.Line++
+			v.loc().Line++
 			return s, ok
 		}},
 	} {

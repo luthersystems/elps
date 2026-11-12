@@ -127,7 +127,7 @@ func LoadPackage(env *lisp.LEnv) *lisp.LVal {
 }
 
 //elpsvet:allow package builtin table; formals are sealed by libutil at construction and shared via registrationFormals (lisp.LEnv.AddBuiltins)
-var builtins = []*libutil.Builtin{
+var builtins = []lisp.LBuiltinDef{
 	libutil.FunctionDoc("make-validator", lisp.Formals("name", "type", lisp.VarArgSymbol, "constraints"), builtinMakeValidator,
 		`Creates and returns a validator function without binding it.
 		name may be a string or a typedef (tagged value). When name is
@@ -165,10 +165,10 @@ var builtins = []*libutil.Builtin{
 	libutil.FunctionDoc("negative", lisp.Formals(), literalConstraint("negative", builtinNegative),
 		`Returns a constraint that checks if the input is strictly
 		less than zero. NaN is neither positive nor negative.`),
-	libutil.FunctionDoc("validate", lisp.Formals("type", "input"), builtinValidate,
+	lisp.DropsArgList(libutil.FunctionDoc("validate", lisp.Formals("type", "input"), builtinValidate,
 		`Validates input against a type validator function (created by
 		make-validator). Returns nil on success or an error with a
-		condition string describing the validation failure.`),
+		condition string describing the validation failure.`)),
 	libutil.FunctionDoc("len", lisp.Formals("allowed-value"), literalConstraint("len", builtinLen),
 		`Returns a constraint that checks if the length of the input
 		equals allowed-value. Works with strings, bytes, and arrays.`),
@@ -236,18 +236,18 @@ var builtins = []*libutil.Builtin{
 		`Returns a constraint that checks if a string input matches
 		the given regular expression pattern. Uses Go RE2 syntax.
 		Returns an error if the pattern is invalid.`),
-	libutil.FunctionDoc("map-of", lisp.Formals("key-type", "value-type"), builtinMapOf,
+	lisp.DropsArgList(libutil.FunctionDoc("map-of", lisp.Formals("key-type", "value-type"), builtinMapOf,
 		`Returns a constraint for sorted-maps that checks every key
 		matches key-type and every value matches value-type, for a map
 		keyed by data such as prices by SKU. Example: (s:map-of s:string
-		s:number).`),
-	libutil.FunctionDoc("describe", lisp.Formals("validator"), builtinDescribe,
+		s:number).`)),
+	lisp.DropsArgList(libutil.FunctionDoc("describe", lisp.Formals("validator"), builtinDescribe,
 		`Returns the definition of a validator as a sorted map: its op
 		("type", "has-key", "in", ...), and where they apply its name,
 		base type, key, literal values and the definitions of the
 		constraints it holds. Lint, the LSP and checks against other
 		type systems read a schema back through it. A validator built
-		in Go with NewValidator describes itself as "opaque".`),
+		in Go with NewValidator describes itself as "opaque".`)),
 }
 
 // This is the `s:validate` keyword. It checks its input matches the type

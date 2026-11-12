@@ -1667,10 +1667,11 @@ per whole KiB of output while they write it. So a step budget stops a large
 dump partway with `step-budget-exceeded`. The output also stops at
 `Runtime.MaxAlloc` with `allocation size exceeds maximum (N)`.
 
-A native Go value is written by Go's `encoding/json`. Before that runs, the
-dump walks the native. The walk refuses a native it cannot write, with the
-error `unable to encode native value: ` and one of the reasons below. It
-stops at the first problem it meets, and nothing in the native is marshalled.
+The dump writes a native Go value as Go's `encoding/json` v1 engine writes
+it. It walks the native twice. The first walk measures it and refuses a
+native it cannot write, with the error `unable to encode native value: ` and
+one of the reasons below. It stops at the first problem it meets, and
+nothing in the native is marshalled.
 
 | Native | Reason |
 |--------|--------|
@@ -1690,11 +1691,13 @@ stops at the first problem it meets, and nothing in the native is marshalled.
 The walk also refuses a native whose output cannot fit in what `MaxAlloc`
 leaves. That error is the allocation error above.
 
-The walk calls no `MarshalJSON` method and no `MarshalText` method of a value.
-A `math/big` number whose decimal form cannot fit is refused before it is
-converted. encoding/json then marshals the native, once per dump, however
-many times the value refers to it. Three errors come after the walk, with the
-same prefix:
+The first walk calls no `MarshalJSON` method and no `MarshalText` method of
+a value. A `math/big` number whose decimal form cannot fit is refused before
+it is converted. The second walk then writes the native, once per dump,
+however many times the value refers to it. It calls each marshal method of a
+value once. It quotes the text of a `MarshalText` method itself, and gives a
+`MarshalJSON` value to encoding/json, which checks and compacts its JSON.
+Three errors come after the first walk, with the same prefix:
 
 | Problem | Reason |
 |---------|--------|
@@ -1715,16 +1718,12 @@ as base64, so its bytes need not be UTF-8.
 
 The bytes libjson writes for lisp values are the same on both engines. A
 lisp string with invalid UTF-8 writes each bad byte as the escape `\ufffd`.
-The results in the tables above are the same on both engines too
-(luthersystems/elps#928). One result still depends on the engine the program
-is built with:
-
-| Case | v1 engine | v2 engine |
-|------|-----------|-----------|
-| A `MarshalText` method of a value, not of a map key, returns invalid UTF-8 | `\ufffd` for each bad byte | a raw U+FFFD |
-
-The walk cannot see that text: it calls no marshal method of a value, so
-that each one runs once.
+A `MarshalText` method of a value that returns invalid UTF-8 writes the same
+escape, because the dump quotes the text itself (luthersystems/elps#950).
+The v2 engine alone would write a raw U+FFFD, which a valid text can hold
+too. The results in the tables above are the same on both engines too
+(luthersystems/elps#928). No result of a dump depends on the engine the
+program is built with.
 
 The load functions do not depend on the engine: not the values they decode,
 and not their errors. A number that does not fit a float gives

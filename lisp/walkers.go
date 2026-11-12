@@ -271,6 +271,12 @@ var memoExemptions = []memoExemption{
 		Reason:  "the cycle guard's descent path (lisp/cycle.go). It bounds a walk; it holds no copy and reproduces no sharing.",
 	},
 	{
+		Subject: "lisp.Runtime.vmCache",
+		Reason: "a per-VM store of Go values a library computed (lisp/vmcache.go), keyed by the library's own " +
+			"unexported key type. No walker reads or fills it, it holds no copy of an LVal payload, and a fork " +
+			"or template VM starts it empty, so it cannot share a payload between two headers.",
+	},
+	{
 		Subject: "lisp.loaderWalk.sizes",
 		Reason:  "the loader's per-node size accounting (lisp/loader.go). It maps a node to a measurement, not to a copy.",
 	},

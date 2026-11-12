@@ -245,7 +245,7 @@ func newProgramAdmitted(exprs []*LVal, w *loaderWalk) (Program, error) {
 		// (errReaderNilNode), so it is read only when there is something to
 		// read.
 		if expr != nil {
-			lerr.source = expr.loc().Copy()
+			lerr.setPlainLoc(expr.loc().Copy())
 		}
 		return Program{}, GoError(lerr)
 	}
@@ -289,7 +289,7 @@ func newProgramAdmitted(exprs []*LVal, w *loaderWalk) (Program, error) {
 			// privately copied from the Reader's tree, but the program copy
 			// is discarded on this path while the error escapes, and the
 			// rule is cheaper to follow than to prove unnecessary.
-			lerr.source = u.loc().Copy()
+			lerr.setPlainLoc(u.loc().Copy())
 			return Program{}, GoError(lerr)
 		}
 		sealed[i] = cp

@@ -766,11 +766,23 @@ func (s *service) buildWorkspaceState(root, fingerprint string, validatedAt time
 	// s.env. It is the service-wide expander rather than a fresh one per
 	// build so that expansions requested by an already-cached workspace state
 	// serialize against this build's expansions too — see s.expander.
+	//
+	// The load is bounded, as in the language server: the build holds
+	// buildMu and the expander lock while it evaluates workspace source,
+	// so a form that does not end would stop every request for the root
+	// and every expansion of the server. After the deadline the later
+	// forms do not run; the next build of the root (a changed
+	// fingerprint) loads them again.
 	if s.expander != nil {
-		if errs := s.expander.LoadWorkspaceMacros(preamble); len(errs) > 0 {
-			for _, err := range errs {
-				slog.Warn("failed to load workspace macro", "error", err)
-			}
+		ctx, cancel := context.WithTimeout(context.Background(), analysis.PreambleLoadTimeout)
+		load := s.expander.LoadWorkspaceMacrosContext(ctx, preamble)
+		cancel()
+		for _, err := range load.Errors {
+			slog.Warn("failed to load workspace macro", "error", err)
+		}
+		if load.Unfinished < len(preamble) {
+			slog.Warn("workspace macro load stopped at its deadline",
+				"workspace_root", root, "unloaded_forms", len(preamble)-load.Unfinished)
 		}
 		state.cfg.MacroExpander = s.expander
 	}

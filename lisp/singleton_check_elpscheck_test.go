@@ -24,16 +24,16 @@ func TestCheckSingleton_DetectsCorruption(t *testing.T) {
 	// singleton_watchdog_test.go.
 	defer pauseSingletonWatchdog()()
 
-	orig := singletonTrue.source
+	orig := singletonTrue.loc()
 	defer func() {
-		singletonTrue.source = orig
+		singletonTrue.setPlainLoc(orig)
 	}()
 
 	// Singletons are constructed with a nil source (issue #362 removed the
 	// shared "<native code>" Location), so corruption is simulated by
 	// installing a location.
 	loc := nativeLocation()
-	singletonTrue.source = &loc
+	singletonTrue.setPlainLoc(&loc)
 
 	defer func() {
 		r := recover()

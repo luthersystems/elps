@@ -21,12 +21,11 @@ func init() {
 	// sealed, evaluated, or shared (see parser/rdparser's seal tests), so
 	// these accessors need no seal guard.
 	//
-	// The write is in place on the node's own Location (see nodeAux): the
-	// parser stamps a node right after it gives the node a Location no
-	// other node holds, and it keeps that pointer to write end positions
-	// through later, so the node must keep the same Location object.
+	// None of them writes the node's Location (see auxKind): the parser
+	// stamps a node right after it gives the node a Location no other node
+	// holds, and it keeps that pointer to write end positions through
+	// later, so the node must keep the same Location object.
 	fmtrawhook.Meta = func(v *LVal) *fmtmeta.Meta { return v.fmtMeta() }
-	fmtrawhook.SetMeta = func(v *LVal, m *fmtmeta.Meta) {
-		v.setFmtMeta(m, true)
-	}
+	fmtrawhook.SetMeta = func(v *LVal, m *fmtmeta.Meta) { v.setFmtMeta(m) }
+	fmtrawhook.EnsureMeta = func(v *LVal) *fmtmeta.Meta { return v.ensureFmtMeta() }
 }

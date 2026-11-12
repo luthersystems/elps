@@ -197,15 +197,16 @@ func collectVisibleSymbols(scope *analysis.Scope, currentPkg string) []*analysis
 	var result []*analysis.Symbol
 	for s := scope; s != nil; s = s.Parent {
 		if currentPkg != "" {
-			for key, sym := range s.PackageSymbols {
-				if !strings.HasPrefix(key, currentPkg+":") {
-					continue
-				}
+			// EachPackageSymbol, not a range over PackageSymbols: with
+			// a GlobalIndex the map holds only the workspace globals
+			// the file looked up.
+			s.EachPackageSymbol(currentPkg, func(_ string, sym *analysis.Symbol) bool {
 				if !seen[sym.Name] {
 					seen[sym.Name] = true
 					result = append(result, sym)
 				}
-			}
+				return true
+			})
 			if imports := s.PackageImports[currentPkg]; imports != nil {
 				for name, sym := range imports {
 					if !seen[name] {
