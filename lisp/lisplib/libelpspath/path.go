@@ -187,14 +187,21 @@ walk:
 			f := frame{v: v}
 			switch v.Type {
 			case lisp.LSortMap:
-				entries := sortedMapEntries(v.Map())
+				m, err := mapData(v)
+				if err != nil {
+					return nil, err
+				}
+				entries := sortedMapEntries(m)
 				if entries.IsError() {
 					return nil, lisp.GoError(entries)
 				}
 				f.cells = entries.Cells
 				f.cp = lisp.SortedMapSized(len(f.cells))
 			case lisp.LArray:
-				dims, data := v.ArrayParts()
+				dims, data, err := arrayParts(v)
+				if err != nil {
+					return nil, err
+				}
 				n := dims.Len()
 				if n > 1 {
 					// Refused, not replaced with nil: that silently dropped
@@ -341,9 +348,9 @@ func copyMapOffPath(v *lisp.LVal, key *lisp.LVal, op *copyOp) (*lisp.LVal, error
 // copyMapExcept is the shared body: skip is the key to leave out, or nil to
 // copy every entry.
 func copyMapExcept(v *lisp.LVal, skip *lisp.LVal, g cycleGuard) (*lisp.LVal, error) {
-	m0 := v.Map()
-	if m0 == nil {
-		return nil, errors.New("first argument is not a map")
+	m0, err := mapData(v)
+	if err != nil {
+		return nil, err
 	}
 	entries := sortedMapEntries(m0)
 	if err := lisp.GoError(entries); err != nil {
@@ -423,7 +430,10 @@ func copyVector(v *lisp.LVal, limit int) (*lisp.LVal, error) {
 
 // copyVectorGuarded is copyVector continuing a walk already in progress.
 func copyVectorGuarded(v *lisp.LVal, g cycleGuard) (*lisp.LVal, error) {
-	_, data := v.ArrayParts()
+	_, data, err := arrayParts(v)
+	if err != nil {
+		return nil, err
+	}
 	cells := data.Cells
 	cellsCopy := make([]*lisp.LVal, len(cells))
 	for i := range cells {
@@ -528,6 +538,38 @@ func sameQuoting(src, cp *lisp.LVal) *lisp.LVal {
 	return cp
 }
 
+// errMalformedArray and errMalformedMap refuse a container whose header
+// only Go host code can build wrongly: an array without its dims and data
+// lists, or a sorted-map without its map data.  Without them the accessors
+// below dereference nil and crash the host (luthersystems/elps#963).
+var (
+	errMalformedArray = errors.New("invalid document: malformed array")
+	errMalformedMap   = errors.New("invalid document: malformed sorted-map")
+)
+
+// arrayParts is lisp.LVal.ArrayParts for a document: it returns the dims
+// list and the data list, in that order, or errMalformedArray in place of a
+// nil or non-list dims or data cell.
+func arrayParts(v *lisp.LVal) (*lisp.LVal, *lisp.LVal, error) {
+	dims, data := v.ArrayParts()
+	if dims == nil || data == nil || dims.Type != lisp.LSExpr || data.Type != lisp.LSExpr {
+		return nil, nil, errMalformedArray
+	}
+	return dims, data, nil
+}
+
+// mapData is lisp.LVal.Map for a document: it returns errMalformedMap in
+// place of a panic when v holds no map data.  A typed nil *MapData
+// (lisp.SortedMapFromData(nil)) is not malformed: lisp reads it as an
+// empty map, and so does every caller here.
+func mapData(v *lisp.LVal) (*lisp.MapData, error) {
+	m, ok := v.Native.(*lisp.MapData)
+	if !ok {
+		return nil, errMalformedMap
+	}
+	return m, nil
+}
+
 // toCells gets a slice of LVal cells from an elps vector.
 //
 // The dimensionality requirement is EXACTLY ONE, and the lower half of that
@@ -573,7 +615,10 @@ func toCells(in *lisp.LVal) ([]*lisp.LVal, error) {
 	}
 	switch in.Type {
 	case lisp.LArray:
-		dims, data := in.ArrayParts()
+		dims, data, err := arrayParts(in)
+		if err != nil {
+			return nil, err
+		}
 		if n := dims.Len(); n != 1 {
 			if n > 1 {
 				return nil, errors.New("cannot index multi-dimensional array")
@@ -1255,7 +1300,10 @@ func (s *dotPath) Get(in *lisp.LVal) (*lisp.LVal, error) {
 	}
 	switch in.Type {
 	case lisp.LSortMap:
-		mmap := in.Map()
+		mmap, err := mapData(in)
+		if err != nil {
+			return nil, err
+		}
 		v, ok := mmap.Get(lisp.String(s.key))
 		if ok {
 			if err := checkCell(v); err != nil {
@@ -1275,7 +1323,10 @@ func (s *dotPath) SetMutate(in *lisp.LVal, newIn *lisp.LVal) (*lisp.LVal, error)
 	}
 	switch in.Type {
 	case lisp.LSortMap:
-		mmap := in.Map()
+		mmap, err := mapData(in)
+		if err != nil {
+			return nil, err
+		}
 		if err := lisp.GoError(mmap.Set(lisp.String(s.key), newIn)); err != nil {
 			return nil, err
 		}
@@ -1315,7 +1366,10 @@ func (s *dotPath) DeleteMutate(in *lisp.LVal) (*lisp.LVal, error) {
 	}
 	switch in.Type {
 	case lisp.LSortMap:
-		mmap := in.Map()
+		mmap, err := mapData(in)
+		if err != nil {
+			return nil, err
+		}
 		if err := lisp.GoError(mmap.Del(lisp.String(s.key))); err != nil {
 			return nil, err
 		}

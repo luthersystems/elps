@@ -84,7 +84,12 @@ func oracleOkSimpleContainerContents(in *lisp.LVal, g cycleGuard) error {
 		}
 		return oracleOkSimpleTypeGuarded(wrapped, g)
 	case lisp.LSortMap:
-		m0 := in.Map()
+		// A map with no map data is refused, as the validator refuses it
+		// (luthersystems/elps#963).
+		m0, ok := in.Native.(*lisp.MapData)
+		if !ok {
+			return errMalformedMap
+		}
 		entries := sortedMapEntries(m0)
 		if entries.IsError() {
 			return lisp.GoError(entries)
@@ -98,7 +103,12 @@ func oracleOkSimpleContainerContents(in *lisp.LVal, g cycleGuard) error {
 		}
 		return nil
 	case lisp.LArray:
+		// An array without its dims and data lists is refused, as the
+		// validator refuses it (luthersystems/elps#963).
 		dims, data := in.ArrayParts()
+		if dims == nil || data == nil || dims.Type != lisp.LSExpr || data.Type != lisp.LSExpr {
+			return errMalformedArray
+		}
 		if n := dims.Len(); n != 1 {
 			if n > 1 {
 				return errors.New("cannot index multi-dimensional array")
@@ -219,7 +229,7 @@ func (g *docGen) leaf() *lisp.LVal {
 	}
 }
 
-// fault returns a value the validator refuses, or one it panics on.
+// fault returns a value the validator refuses.
 func (g *docGen) fault() *lisp.LVal {
 	switch g.rng.IntN(9) {
 	case 0: // two dimensions
@@ -246,7 +256,7 @@ func (g *docGen) fault() *lisp.LVal {
 		return v
 	case 7: // a Go nil cell: the walk refuses it with errNilCell
 		return lisp.SExpr([]*lisp.LVal{lisp.Int(1), nil})
-	default: // an array with no cells: the walk panics
+	default: // an array with no cells: refused as malformed (#963)
 		return &lisp.LVal{Type: lisp.LArray}
 	}
 }
@@ -411,8 +421,10 @@ func TestValidatorMatchesOrderedWalk(t *testing.T) {
 		}
 	}
 	// The comparison is only worth its name if the documents reach every
-	// kind of outcome.
-	for _, kind := range []string{"valid", "cycle", "host error", "other error", "panic"} {
+	// kind of outcome.  No generated document panics the walk since
+	// luthersystems/elps#963 made a malformed array an error; a panic
+	// still fails the comparison above.
+	for _, kind := range []string{"valid", "cycle", "host error", "other error"} {
 		if outcomes[kind] < docs/200 {
 			t.Errorf("only %d of %d documents had the outcome %q", outcomes[kind], docs, kind)
 		}
