@@ -27,7 +27,14 @@ def validate(doc):
         assert jobs[name]["runs-on"] == "ubuntu-24.04-arm"
         assert "concurrency" not in jobs[name]
     # Every job defaults to read-only GITHUB_TOKEN; publishing uses VSCE_PAT.
+    # A job may add id-token (for an OIDC publish) but never a write scope.
     assert doc.get("permissions") == {"contents": "read"}
+    for name, job in jobs.items():
+        perms = job.get("permissions", {})
+        assert isinstance(perms, dict), name
+        for scope, level in perms.items():
+            assert level in ("read", "none") or (scope == "id-token" and level == "write"), \
+                f"{name}: {scope}: {level}"
     assert "env" not in doc
     assert "concurrency" not in doc
     validate_tag_on_main(jobs)
@@ -105,6 +112,13 @@ class PublicationIsolation(unittest.TestCase):
                     changed["permissions"] = value
                 with self.assertRaises(AssertionError):
                     validate(changed)
+        for name in ("build-binaries", "publish-platform", "publish-universal"):
+            for value in ("write-all", {"contents": "write"}, {"packages": "write"}):
+                with self.subTest(job_permissions=name, value=value):
+                    changed = copy.deepcopy(doc)
+                    changed["jobs"][name]["permissions"] = value
+                    with self.assertRaises(AssertionError):
+                        validate(changed)
         # The publish must stay behind the tag-on-main ancestry gate.
         for name, needs in (("build-binaries", None), ("publish-platform", "tag-on-main"),
                             ("publish-universal", "tag-on-main")):

@@ -9,7 +9,8 @@ on:
 
 # Least privilege (code scanning: actions/missing-workflow-permissions). No job
 # writes to GitHub: artifacts pass through the run's own storage and the
-# Marketplace publish authenticates with VSCE_PAT, not GITHUB_TOKEN.
+# Marketplace publish authenticates with VSCE_PAT, not GITHUB_TOKEN. A move to
+# an OIDC publish (azure/login) adds `id-token: write` on the publish jobs only.
 permissions:
   contents: read
 

@@ -298,9 +298,6 @@ jobs:
     timeout-minutes: 30
     needs: [changes]
     if: needs.changes.outputs.docs_only != 'true'
-    # Read only: the job checks out and runs tests.
-    permissions:
-      contents: read
     env:
       GOEXPERIMENT: nojsonv2
     steps:
