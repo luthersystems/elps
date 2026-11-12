@@ -600,6 +600,9 @@ such a lowering; other operators, such as `when`, stay as they are. A tool
 that compiles ELPS code and models the macro's expansion (a `let` and an
 `if`), and not the newer operator, asks for this form. The lowered code
 evaluates to the same value. Quoted data and local shadowing work as above.
+`(macroexpand-all-lowered form)` is the same call with one argument, for an
+embedder that counts evaluation steps and must not pay for the two extra
+arguments.
 
 ```lisp
 (macroexpand-all '(get-default m "k" 0) :lower true)

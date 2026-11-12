@@ -1706,7 +1706,17 @@ func (w *CodeWalker) macroEnv() *LEnv {
 }
 
 func builtinMacroExpandAll(env *LEnv, args *LVal) *LVal {
-	form := args.ReqArg(env, 0)
+	return macroExpandAllArg(env, args.ReqArg(env, 0), True(args.KeyArg(1)))
+}
+
+// builtinMacroExpandAllLowered is (macroexpand-all form :lower true) with
+// one argument.  Why: an embedder that charges evaluation steps (substrate's
+// defflow) would pay two more steps per call for the :lower true argument.
+func builtinMacroExpandAllLowered(env *LEnv, args *LVal) *LVal {
+	return macroExpandAllArg(env, args.ReqArg(env, 0), true)
+}
+
+func macroExpandAllArg(env *LEnv, form *LVal, lower bool) *LVal {
 	if form.IsError() {
 		return form
 	}
@@ -1723,7 +1733,7 @@ func builtinMacroExpandAll(env *LEnv, args *LVal) *LVal {
 	if form.quoted {
 		code = shallowUnquote(form)
 	}
-	r := env.macroExpandAll(code, True(args.KeyArg(1)))
+	r := env.macroExpandAll(code, lower)
 	if r.IsError() {
 		return r
 	}

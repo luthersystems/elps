@@ -20,6 +20,11 @@ func TestMacroExpandAllLower(t *testing.T) {
 			{`(macroexpand-all '(get-default m "k" 0) :lower true)`, `'` + gd, ""},
 			{`(macroexpand-all '(lisp:get-default m "k" 0) :lower true)`, `'` + gd, ""},
 		}},
+		{"macroexpand-all-lowered is :lower true", elpstest.TestSequence{
+			{`(macroexpand-all-lowered '(get-default m "k" 0))`, `'` + gd, ""},
+			{`(macroexpand-all-lowered '(list (quote (get-default m "k" 0))))`, `'(list (quote (get-default m "k" 0)))`, ""},
+			{`(macroexpand-all-lowered '(get-default m "k"))`, "test:1:1: lisp:get-default: invalid number of arguments: 2", ""},
+		}},
 		{"no lowering without :lower", elpstest.TestSequence{
 			{`(macroexpand-all '(get-default m "k" 0))`, `'(get-default m "k" 0)`, ""},
 			{`(macroexpand-all '(get-default m "k" 0) :lower false)`, `'(get-default m "k" 0)`, ""},

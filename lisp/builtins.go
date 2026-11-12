@@ -147,6 +147,10 @@ var (
 			with a lowering) is expanded as the macro it replaced expanded
 			it, for tools that model the macro's expansion and not the
 			operator.`},
+		{"macroexpand-all-lowered", Formals("quoted-form"), builtinMacroExpandAllLowered,
+			`Is (macroexpand-all quoted-form :lower true) with one argument, so
+			a caller that counts evaluation steps pays the same as for
+			macroexpand-all without :lower.`},
 		{"builtin", Formals("name"), builtinRegisteredBuiltin,
 			`Returns the builtin registered as name, a quoted qualified symbol
 			such as 'math:floor, whatever that name is bound to now.
