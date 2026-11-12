@@ -378,7 +378,8 @@ func containerWidth(in *lisp.LVal) int {
 		}
 		return 0
 	case lisp.LArray:
-		if _, data, err := arrayParts(in); err == nil {
+		if checkArray(in) == nil {
+			_, data := in.ArrayParts()
 			return len(data.Cells)
 		}
 		return 0
@@ -419,10 +420,10 @@ func okSimpleContainerContents(in *lisp.LVal, g cycleGuard) error {
 		// Exactly one dimension, matching toCells -- see the reason there.
 		// The gate and the accessor have to agree about what "indexable"
 		// means, or a shape this admits still fails downstream.
-		dims, data, err := arrayParts(in)
-		if err != nil {
+		if err := checkArray(in); err != nil {
 			return err
 		}
+		dims, data := in.ArrayParts()
 		if n := dims.Len(); n != 1 {
 			if n > 1 {
 				return errors.New("cannot index multi-dimensional array")

@@ -198,10 +198,10 @@ walk:
 				f.cells = entries.Cells
 				f.cp = lisp.SortedMapSized(len(f.cells))
 			case lisp.LArray:
-				dims, data, err := arrayParts(v)
-				if err != nil {
+				if err := checkArray(v); err != nil {
 					return nil, err
 				}
+				dims, data := v.ArrayParts()
 				n := dims.Len()
 				if n > 1 {
 					// Refused, not replaced with nil: that silently dropped
@@ -430,10 +430,10 @@ func copyVector(v *lisp.LVal, limit int) (*lisp.LVal, error) {
 
 // copyVectorGuarded is copyVector continuing a walk already in progress.
 func copyVectorGuarded(v *lisp.LVal, g cycleGuard) (*lisp.LVal, error) {
-	_, data, err := arrayParts(v)
-	if err != nil {
+	if err := checkArray(v); err != nil {
 		return nil, err
 	}
+	_, data := v.ArrayParts()
 	cells := data.Cells
 	cellsCopy := make([]*lisp.LVal, len(cells))
 	for i := range cells {
@@ -547,15 +547,15 @@ var (
 	errMalformedMap   = errors.New("invalid document: malformed sorted-map")
 )
 
-// arrayParts is lisp.LVal.ArrayParts for a document: it returns the dims
-// list and the data list, in that order, or errMalformedArray in place of a
-// nil or non-list dims or data cell.
-func arrayParts(v *lisp.LVal) (*lisp.LVal, *lisp.LVal, error) {
+// checkArray returns errMalformedArray when v's dims or data cell is
+// missing, nil or not a list.  After it returns nil, v.ArrayParts gives two
+// lists.
+func checkArray(v *lisp.LVal) error {
 	dims, data := v.ArrayParts()
 	if dims == nil || data == nil || dims.Type != lisp.LSExpr || data.Type != lisp.LSExpr {
-		return nil, nil, errMalformedArray
+		return errMalformedArray
 	}
-	return dims, data, nil
+	return nil
 }
 
 // mapData is lisp.LVal.Map for a document: it returns errMalformedMap in
@@ -615,10 +615,10 @@ func toCells(in *lisp.LVal) ([]*lisp.LVal, error) {
 	}
 	switch in.Type {
 	case lisp.LArray:
-		dims, data, err := arrayParts(in)
-		if err != nil {
+		if err := checkArray(in); err != nil {
 			return nil, err
 		}
+		dims, data := in.ArrayParts()
 		if n := dims.Len(); n != 1 {
 			if n > 1 {
 				return nil, errors.New("cannot index multi-dimensional array")
