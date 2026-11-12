@@ -181,6 +181,9 @@ class OptionalNodeGate(unittest.TestCase):
         block = block.split('echo "== extracted workflow bodies: bench-compare', 1)[0]
         self.assertIn("marketplace-diagnostics.test.cjs", block)
         script = 'fail=0\nok() { :; }\nbad() { fail=1; }\n' + helper + block + '\nexit "$fail"\n'
+        # The script is this repository's own ci-gates-test.sh block, run with
+        # argv (no shell=True); nothing in it comes from outside the checkout.
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit
         return subprocess.run(["/bin/bash", "-c", script], check=False, text=True,
                               capture_output=True, timeout=15,
                               env={**os.environ, "PATH": path, "SCRIPT_DIR": str(script_dir)})
