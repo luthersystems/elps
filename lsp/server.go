@@ -459,6 +459,15 @@ func (s *Server) buildWorkspaceIndex() {
 				strings.Join(skipped, ", "))
 		}
 		cfg.MacroExpander = exp
+		// A call of a workspace macro, such as (defhelper foo), defines
+		// foo only when it expands. Add what the macro calls of each
+		// file define to the tables, so the other files resolve those
+		// names too (luthersystems/elps#953). A save computes them again
+		// (withGenerated).
+		if gen, changed := scan.WithGeneratedDefinitions(cfg, nil, s.readGenerated(nil, "")); changed {
+			scan = gen
+			setWorkspaceTables(cfg, scan.Prescan(), stdlib)
+		}
 	}
 
 	// Build workspace reference index using the populated config.
@@ -1066,10 +1075,24 @@ func (s *Server) updateFileIndex(uri string) indexUpdate {
 		old := s.wsScan
 		scan, changed := old.WithFile(filePath, source)
 		name, _ := scan.Path(filePath)
-		up := indexUpdate{records: s.storeWorkspaceScan(scan, name), tables: changed}
 		exp := s.macroExpander
 		s.analysisCfgMu.Unlock()
+		// The macros load before the tables are stored: what the macro
+		// calls define (withGenerated) follows the macros after the
+		// save. macroReloadMu keeps every other writer of the scan out
+		// meanwhile.
+		up := indexUpdate{tables: changed}
 		up.macros = s.reloadFileMacros(exp, old, scan, name)
+		genName := name
+		if up.macros {
+			// A changed macro can change what a call in any file defines.
+			genName = ""
+		}
+		scan, changed = s.withGenerated(exp, scan, genName, source)
+		up.tables = up.tables || changed
+		s.analysisCfgMu.Lock()
+		up.records = s.storeWorkspaceScan(scan, name)
+		s.analysisCfgMu.Unlock()
 		return up
 	}
 	cfg := s.analysisCfg
@@ -1145,6 +1168,53 @@ func (s *Server) reloadFileMacros(exp *analysis.EnvMacroExpander, old, next *ana
 	return reloaded
 }
 
+// withGenerated returns scan with the definitions that the macro calls
+// of the file name make, or of every file when name is "", expanded by exp
+// (see analysis.WorkspaceScan.WithGeneratedDefinitions). It reports
+// whether they changed. A save computes them for the saved file only,
+// unless it loaded macros again: then a call in any file can expand to
+// other definitions. source is the text of name the save scanned (nil
+// for none). Without an expander it returns scan.
+//
+// The caller holds macroReloadMu and not analysisCfgMu: the expansion
+// evaluates Lisp.
+func (s *Server) withGenerated(exp *analysis.EnvMacroExpander, scan *analysis.WorkspaceScan, name string, source []byte) (*analysis.WorkspaceScan, bool) {
+	allFiles := name == ""
+	if exp == nil || !allFiles && !scan.MayGenerateDefinitions(name) {
+		// A file of defun and set forms: no tables to merge for it, so
+		// the save costs what it did before (luthersystems/elps#944).
+		return scan, false
+	}
+	cfg := &analysis.Config{MacroExpander: exp}
+	setWorkspaceTables(cfg, scan.Prescan(), s.stdlibExportsSnapshot())
+	var paths []string
+	if !allFiles {
+		paths = []string{name}
+	}
+	return scan.WithGeneratedDefinitions(cfg, paths, s.readGenerated(source, name))
+}
+
+// readGenerated returns the read function of WithGeneratedDefinitions:
+// the text source for the file name (the text the save scanned), and
+// otherwise the file on disk within the size limit of the workspace scan.
+func (s *Server) readGenerated(source []byte, name string) func(string) ([]byte, bool) {
+	return func(path string) ([]byte, bool) {
+		if source != nil && path == name {
+			return source, true
+		}
+		src, status := s.readWorkspaceFile(path)
+		return src, status == workspaceReadOK
+	}
+}
+
+// stdlibExportsSnapshot returns the package exports of the registry that
+// the index build read.
+func (s *Server) stdlibExportsSnapshot() map[string][]analysis.ExternalSymbol {
+	s.analysisCfgMu.Lock()
+	defer s.analysisCfgMu.Unlock()
+	return s.stdlibExports
+}
+
 // removeFileIndex removes what the file at filePath adds to the workspace
 // tables of the analysis config. Its results are those of
 // updateFileIndex.
@@ -1164,11 +1234,19 @@ func (s *Server) removeFileIndex(filePath string) indexUpdate {
 			return indexUpdate{}
 		}
 		scan, _ := old.WithoutFile(filePath)
-		up := indexUpdate{records: s.storeWorkspaceScan(scan, name), tables: true}
 		exp := s.macroExpander
 		s.analysisCfgMu.Unlock()
 		// The macros of a removed file go away, as at the next index build.
+		up := indexUpdate{tables: true}
 		up.macros = s.reloadFileMacros(exp, old, scan, name)
+		if up.macros {
+			// The removed file defined macros: what the calls of the other
+			// files define can change with them.
+			scan, _ = s.withGenerated(exp, scan, "", nil)
+		}
+		s.analysisCfgMu.Lock()
+		up.records = s.storeWorkspaceScan(scan, name)
+		s.analysisCfgMu.Unlock()
 		return up
 	}
 	s.analysisCfgMu.Unlock()

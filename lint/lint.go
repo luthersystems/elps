@@ -445,10 +445,11 @@ func BuildAnalysisConfig(cfg *LintConfig) (*analysis.Config, error) {
 		IncludeDirs: cfg.IncludeDirs,
 	}
 
-	prescan, err := analysis.PrescanWorkspace(cfg.Workspace, scanCfg)
+	scan, err := analysis.ScanWorkspaceFiles(cfg.Workspace, scanCfg)
 	if err != nil {
 		return nil, fmt.Errorf("scanning workspace %s: %w", cfg.Workspace, err)
 	}
+	prescan := scan.Prescan()
 
 	// Start with stdlib exports (either provided or extracted fresh).
 	//
@@ -481,10 +482,9 @@ func BuildAnalysisConfig(cfg *LintConfig) (*analysis.Config, error) {
 		}
 	}
 
-	// Merge workspace package exports
-	for pkg, wsSyms := range prescan.PkgExports {
-		pkgExports[pkg] = append(pkgExports[pkg], wsSyms...)
-	}
+	// The workspace package exports are merged below, once the macros
+	// have loaded: the macro calls of a file can define and export names.
+	stdlibExports := pkgExports
 
 	// Set up macro expansion. Explicit MacroExpander takes precedence;
 	// otherwise, if Env is provided, load workspace macros and create one.
@@ -520,7 +520,42 @@ func BuildAnalysisConfig(cfg *LintConfig) (*analysis.Config, error) {
 		syntax = &bindingMacroExpander{env: stdlibEnv}
 	}
 
-	acfg := &analysis.Config{
+	acfg := workspaceConfig(prescan, stdlibExports)
+	acfg.MacroExpander, acfg.SyntaxExpander = expander, syntax
+	if expander != nil {
+		// A call of a workspace macro, such as (defhelper foo), defines
+		// foo only when it expands. Add what the macro calls of each file
+		// define to the tables, so the other files resolve those names
+		// too (luthersystems/elps#953).
+		if withGenerated, changed := scan.WithGeneratedDefinitions(acfg, nil, nil); changed {
+			acfg = workspaceConfig(withGenerated.Prescan(), stdlibExports)
+			acfg.MacroExpander, acfg.SyntaxExpander = expander, syntax
+		}
+	}
+
+	// Build workspace refs so lint analyzers (e.g. unused-function) can check
+	// cross-file references. This re-parses workspace files — acceptable for
+	// CLI lint runs (typically <1s for ~100 files).
+	acfg.WorkspaceRefs = analysis.ScanWorkspaceRefs(cfg.Workspace, acfg, scanCfg)
+
+	return acfg, nil
+}
+
+// workspaceConfig returns the analysis config with the workspace tables of
+// prescan and the package exports of the standard library and the
+// registry, stdlib, which it does not write.
+func workspaceConfig(prescan *analysis.WorkspacePrescan, stdlib map[string][]analysis.ExternalSymbol) *analysis.Config {
+	pkgExports := make(map[string][]analysis.ExternalSymbol, len(stdlib)+len(prescan.PkgExports))
+	for pkg, syms := range stdlib {
+		pkgExports[pkg] = syms
+	}
+	for pkg, wsSyms := range prescan.PkgExports {
+		// The full slice expression makes append copy, so a slice of
+		// stdlib is not written.
+		have := pkgExports[pkg]
+		pkgExports[pkg] = append(have[:len(have):len(have)], wsSyms...)
+	}
+	return &analysis.Config{
 		ExtraGlobals: prescan.AllDefs,
 		// One index for every file this run analyzes, and for the
 		// workspace scan below (luthersystems/elps#944).
@@ -532,16 +567,7 @@ func BuildAnalysisConfig(cfg *LintConfig) (*analysis.Config, error) {
 		DefaultPackage:      prescan.DefaultPackage,
 		FilePackages:        prescan.FilePackages,
 		RecordMethodsByFile: prescan.RecordMethodsByFile,
-		MacroExpander:       expander,
-		SyntaxExpander:      syntax,
 	}
-
-	// Build workspace refs so lint analyzers (e.g. unused-function) can check
-	// cross-file references. This re-parses workspace files — acceptable for
-	// CLI lint runs (typically <1s for ~100 files).
-	acfg.WorkspaceRefs = analysis.ScanWorkspaceRefs(cfg.Workspace, acfg, scanCfg)
-
-	return acfg, nil
 }
 
 // bindingMacros are the standard library macros that bind names in their

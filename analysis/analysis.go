@@ -165,6 +165,31 @@ type Result struct {
 // Analyze performs semantic analysis on a set of parsed expressions.
 // It builds a scope tree, resolves references, and collects unresolved symbols.
 func Analyze(exprs []*lisp.LVal, cfg *Config) *Result {
+	a := newAnalyzer(cfg)
+	root := a.root
+
+	// Phase 1: Pre-scan top-level definitions (forward references)
+	a.prescan(exprs, root)
+
+	// Phase 2: Deep recursive walk
+	currentPkg := a.defaultPackage()
+	for _, expr := range exprs {
+		currentPkg = a.analyzeExpr(expr, root, currentPkg)
+		if expr != nil && expr.Type == lisp.LSExpr && !expr.IsQuoted() && len(expr.Cells) > 0 &&
+			a.packageFormHead(expr) == "in-package" && len(expr.Cells) > 1 {
+			if pkgName := extractPackageName(expr.Cells[1]); pkgName != "" {
+				currentPkg = pkgName
+			}
+		}
+	}
+
+	return a.result
+}
+
+// newAnalyzer returns an analyzer whose root scope holds the builtins and
+// the workspace globals of cfg. Analyze runs both of its phases on it;
+// fileGeneratedDefinitions runs only the prescan.
+func newAnalyzer(cfg *Config) *analyzer {
 	if cfg == nil {
 		cfg = &Config{}
 	}
@@ -194,23 +219,7 @@ func Analyze(exprs []*lisp.LVal, cfg *Config) *Result {
 		cfg:              cfg,
 		qualifiedSymbols: make(map[string]*Symbol),
 	}
-
-	// Phase 1: Pre-scan top-level definitions (forward references)
-	a.prescan(exprs, root)
-
-	// Phase 2: Deep recursive walk
-	currentPkg := a.defaultPackage()
-	for _, expr := range exprs {
-		currentPkg = a.analyzeExpr(expr, root, currentPkg)
-		if expr != nil && expr.Type == lisp.LSExpr && !expr.IsQuoted() && len(expr.Cells) > 0 &&
-			a.packageFormHead(expr) == "in-package" && len(expr.Cells) > 1 {
-			if pkgName := extractPackageName(expr.Cells[1]); pkgName != "" {
-				currentPkg = pkgName
-			}
-		}
-	}
-
-	return a.result
+	return a
 }
 
 // defineGlobals defines the builtins and then every workspace global in

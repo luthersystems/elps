@@ -194,6 +194,18 @@ A save that changes no such form (a function body or a comment) evaluates
 nothing. A file with no `in-package` form reloads in the package the index
 build gave it: the package that the file before it left active.
 
+A call of a workspace macro can define a name: after
+`(defmacro defhelper (name) (quasiquote (defun (unquote name) () 1)))`,
+the call `(defhelper foo)` defines `foo`. The scan of the text cannot see
+`foo`, so once the macros load the index expands the top-level macro calls
+of each file and adds what they define to the workspace tables. Every file
+then resolves `foo`, not only the file of the call, and go-to-definition of
+`foo` leads to the call (luthersystems/elps#953). A save expands the calls
+of the saved file again, and a save that loads macros again expands the
+calls of every file, because a changed macro can change what any call
+defines. `elps lint --workspace` and `elps mcp` do the same when they have
+an environment.
+
 The server bounds this evaluation, because every analysis waits for it.
 Each form has a budget of 10,000,000 steps
 (`analysis.PreambleFormMaxSteps`). The index build has a deadline of 30
@@ -266,7 +278,3 @@ they land correctly either way.)
 - **UTF-16 columns are only partly implemented**: see
   [Position Encoding](#position-encoding) for exactly which responses are
   converted and which still carry byte columns.
-- **Macro-defined functions in other files**: a function that a call of a
-  workspace macro defines resolves in the file of the call, but another file
-  that uses it reports it as an undefined symbol. The workspace index does
-  not expand macro calls (luthersystems/elps#953).

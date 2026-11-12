@@ -40,6 +40,7 @@ var specialOpAllowlist = map[string]string{
 	"analysis/workspace.go:SymbolKeyFromNameKind":               "translates declaration names to workspace symbol keys",
 	"analysis/workspace.go:extractDefinitions":                  "extracts workspace declaration metadata, not expression traversal",
 	"analysis/workspace.go:scanFileFull":                        "collects top-level workspace definitions",
+	"analysis/workspace_generated.go:hasMacroCandidates":        "flattens a top-level progn, as expansionPackageForms does, to find calls the prescan offers for expansion",
 	"astutil/exports.go:ExportNameNodes":                        "extracts literal export operands, including explicit quote",
 	"astutil/query.go:ClassifyNodes":                            "reads walker Op events and classifies quasiquote template holes",
 	"astutil/walk.go:quotedSymbolName":                          "extracts a quoted symbol operand, not expression dispatch",
