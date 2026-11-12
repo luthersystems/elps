@@ -2770,7 +2770,12 @@ The `cmd` package exports `LintCommand()` and `DocCommand()` factory functions
 that return fully configured `*cobra.Command` values with all flags, output
 modes, and diagnostic rendering built in. Pass `cmd.WithRegistry` or
 `cmd.WithEnv` to inject embedder symbols so that semantic analysis and
-documentation queries see Go-registered builtins.
+documentation queries see Go-registered builtins. Prefer `cmd.WithEnv`
+for `LintCommand`, `LSPCommand` and `MCPCommand`: they load the workspace macros into
+the env, so the analysis expands a call of a workspace macro and sees the
+functions it defines. With `cmd.WithRegistry` alone no workspace macro is
+expanded, because a registry cannot evaluate one. With neither option the
+commands build a standard library env and expand the macros with it.
 
 ```go
 package main
