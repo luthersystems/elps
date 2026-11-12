@@ -805,7 +805,7 @@ func (s *service) buildWorkspaceState(root, fingerprint string, validatedAt time
 		// define to the tables, so the other files resolve those names
 		// too (luthersystems/elps#953).
 		if scan != nil {
-			if gen, changed := scan.WithGeneratedDefinitions(state.cfg, nil); changed {
+			if gen, changed := scan.WithGeneratedDefinitions(state.cfg, nil, nil); changed {
 				setTables(gen.Prescan())
 			}
 		}

@@ -527,7 +527,7 @@ func BuildAnalysisConfig(cfg *LintConfig) (*analysis.Config, error) {
 		// foo only when it expands. Add what the macro calls of each file
 		// define to the tables, so the other files resolve those names
 		// too (luthersystems/elps#953).
-		if withGenerated, changed := scan.WithGeneratedDefinitions(acfg, nil); changed {
+		if withGenerated, changed := scan.WithGeneratedDefinitions(acfg, nil, nil); changed {
 			acfg = workspaceConfig(withGenerated.Prescan(), stdlibExports)
 			acfg.MacroExpander, acfg.SyntaxExpander = expander, syntax
 		}

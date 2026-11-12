@@ -511,4 +511,7 @@ func TestLSPCommand_StdioMacroDefinitionsAcrossFiles(t *testing.T) {
 	// A save of app.lisp that defines bar in place of foo.
 	assert.Equal(t, []string{"undefined symbol: foo"}, save("app.lisp", "(defhelper bar)\n(bar)\n"))
 	assert.Empty(t, save("app.lisp", files["app.lisp"]))
+	// A save that removes the call: app.lisp keeps no macro call, so the
+	// tables lose foo all the same.
+	assert.Equal(t, []string{"undefined symbol: foo"}, save("app.lisp", "(foo)\n"))
 }

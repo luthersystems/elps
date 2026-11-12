@@ -464,7 +464,7 @@ func (s *Server) buildWorkspaceIndex() {
 		// file define to the tables, so the other files resolve those
 		// names too (luthersystems/elps#953). A save computes them again
 		// (withGenerated).
-		if gen, changed := scan.WithGeneratedDefinitions(cfg, nil); changed {
+		if gen, changed := scan.WithGeneratedDefinitions(cfg, nil, s.readGenerated(nil, "")); changed {
 			scan = gen
 			setWorkspaceTables(cfg, scan.Prescan(), stdlib)
 		}
@@ -1083,7 +1083,7 @@ func (s *Server) updateFileIndex(uri string) indexUpdate {
 		// meanwhile.
 		up := indexUpdate{tables: changed}
 		up.macros = s.reloadFileMacros(exp, old, scan, name)
-		scan, changed = s.withGenerated(exp, scan, name, up.macros)
+		scan, changed = s.withGenerated(exp, scan, name, source, up.macros)
 		up.tables = up.tables || changed
 		s.analysisCfgMu.Lock()
 		up.records = s.storeWorkspaceScan(scan, name)
@@ -1172,8 +1172,10 @@ func (s *Server) reloadFileMacros(exp *analysis.EnvMacroExpander, old, next *ana
 //
 // The caller holds macroReloadMu and not analysisCfgMu: the expansion
 // evaluates Lisp.
-func (s *Server) withGenerated(exp *analysis.EnvMacroExpander, scan *analysis.WorkspaceScan, name string, allFiles bool) (*analysis.WorkspaceScan, bool) {
-	if exp == nil {
+func (s *Server) withGenerated(exp *analysis.EnvMacroExpander, scan *analysis.WorkspaceScan, name string, source []byte, allFiles bool) (*analysis.WorkspaceScan, bool) {
+	if exp == nil || !allFiles && !scan.MayGenerateDefinitions(name) {
+		// A file of defun and set forms: no tables to merge for it, so
+		// the save costs what it did before (luthersystems/elps#944).
 		return scan, false
 	}
 	cfg := &analysis.Config{MacroExpander: exp}
@@ -1182,7 +1184,20 @@ func (s *Server) withGenerated(exp *analysis.EnvMacroExpander, scan *analysis.Wo
 	if !allFiles {
 		paths = []string{name}
 	}
-	return scan.WithGeneratedDefinitions(cfg, paths)
+	return scan.WithGeneratedDefinitions(cfg, paths, s.readGenerated(source, name))
+}
+
+// readGenerated returns the read function of WithGeneratedDefinitions:
+// the text source for the file name (the text the save scanned), and
+// otherwise the file on disk within the size limit of the workspace scan.
+func (s *Server) readGenerated(source []byte, name string) func(string) ([]byte, bool) {
+	return func(path string) ([]byte, bool) {
+		if source != nil && path == name {
+			return source, true
+		}
+		src, status := s.readWorkspaceFile(path)
+		return src, status == workspaceReadOK
+	}
 }
 
 // stdlibExportsSnapshot returns the package exports of the registry that
@@ -1220,7 +1235,7 @@ func (s *Server) removeFileIndex(filePath string) indexUpdate {
 		if up.macros {
 			// The removed file defined macros: what the calls of the other
 			// files define can change with them.
-			scan, _ = s.withGenerated(exp, scan, "", true)
+			scan, _ = s.withGenerated(exp, scan, "", nil, true)
 		}
 		s.analysisCfgMu.Lock()
 		up.records = s.storeWorkspaceScan(scan, name)

@@ -51,7 +51,7 @@ func TestWithGeneratedDefinitions(t *testing.T) {
 	before := scan.Prescan()
 	assert.Empty(t, namesOf(before.PkgAllSymbols["lib"], "foo", "hidden"))
 
-	gen, changed := scan.WithGeneratedDefinitions(cfg, nil)
+	gen, changed := scan.WithGeneratedDefinitions(cfg, nil, nil)
 	require.True(t, changed)
 	after := gen.Prescan()
 	assert.ElementsMatch(t, []string{"foo", "hidden"}, namesOf(after.PkgAllSymbols["lib"], "foo", "hidden"))
@@ -74,18 +74,29 @@ func TestWithGeneratedDefinitions(t *testing.T) {
 	assert.Equal(t, filepath.Join(root, "app.lisp"), foo.Source.File, "the definition is in the file of the call")
 
 	// The same expansion again changes nothing.
-	_, changed = gen.WithGeneratedDefinitions(cfg, nil)
+	_, changed = gen.WithGeneratedDefinitions(cfg, nil, nil)
 	assert.False(t, changed)
 
-	// A new scan of the file drops what its calls defined, until they are
-	// expanded again.
-	src, err := os.ReadFile(filepath.Join(root, "app.lisp"))
+	// A new scan of the file keeps what its calls defined until they are
+	// expanded again, and the expansion reports the change against them:
+	// a save that removes the call must reach the other files.
+	app := filepath.Join(root, "app.lisp")
+	src, err := os.ReadFile(app)
 	require.NoError(t, err)
-	rescanned, _ := gen.WithFile(filepath.Join(root, "app.lisp"), src)
-	assert.Empty(t, namesOf(rescanned.Prescan().PkgAllSymbols["lib"], "foo", "hidden"))
-	again, changed := rescanned.WithGeneratedDefinitions(cfg, []string{filepath.Join(root, "app.lisp")})
+	rescanned, _ := gen.WithFile(app, src)
+	assert.Len(t, namesOf(rescanned.Prescan().PkgAllSymbols["lib"], "foo", "hidden"), 2)
+	assert.True(t, rescanned.MayGenerateDefinitions(app))
+	_, changed = rescanned.WithGeneratedDefinitions(cfg, []string{app}, nil)
+	assert.False(t, changed, "the same text defines the same names")
+
+	noCalls := []byte("(in-package 'lib)\n(defun other () 1)\n")
+	rescanned, _ = gen.WithFile(app, noCalls)
+	assert.True(t, rescanned.MayGenerateDefinitions(app), "it has definitions to drop")
+	dropped, changed := rescanned.WithGeneratedDefinitions(cfg, []string{app},
+		func(string) ([]byte, bool) { return noCalls, true })
 	assert.True(t, changed)
-	assert.Len(t, namesOf(again.Prescan().PkgAllSymbols["lib"], "foo", "hidden"), 2)
+	assert.Empty(t, namesOf(dropped.Prescan().PkgAllSymbols["lib"], "foo", "hidden"))
+	assert.False(t, dropped.MayGenerateDefinitions(app), "a file of defun forms is not read again")
 }
 
 // TestWithGeneratedDefinitions_NameFromMacroBody checks that a name the
@@ -96,7 +107,7 @@ func TestWithGeneratedDefinitions_NameFromMacroBody(t *testing.T) {
 		"macros.lisp": "(defmacro defbar () '(defun bar () 1))\n",
 		"app.lisp":    "(defbar)\n",
 	})
-	gen, changed := scan.WithGeneratedDefinitions(cfg, nil)
+	gen, changed := scan.WithGeneratedDefinitions(cfg, nil, nil)
 	require.True(t, changed)
 	defs := gen.Prescan().AllDefs
 	var bar *ExternalSymbol
@@ -111,12 +122,24 @@ func TestWithGeneratedDefinitions_NameFromMacroBody(t *testing.T) {
 	assert.Equal(t, 1, bar.Source.Line)
 }
 
+// TestWithGeneratedDefinitions_TextDefinitionOnce checks that a defun
+// written in the arguments of a macro call, which the scan of the text
+// finds too, is in the tables once.
+func TestWithGeneratedDefinitions_TextDefinitionOnce(t *testing.T) {
+	scan, cfg, _ := generatedWorkspace(t, map[string]string{
+		"macros.lisp": "(defmacro with-logging (&rest body) (quasiquote (progn (unquote-splicing body))))\n",
+		"app.lisp":    "(with-logging (defun handler () 1))\n",
+	})
+	gen, _ := scan.WithGeneratedDefinitions(cfg, nil, nil)
+	assert.Len(t, namesOf(gen.Prescan().AllDefs, "handler"), 1)
+}
+
 // TestWithGeneratedDefinitions_NoExpander checks that a scan is returned
 // as it is without an expander.
 func TestWithGeneratedDefinitions_NoExpander(t *testing.T) {
 	scan, cfg, _ := generatedWorkspace(t, map[string]string{"app.lisp": "(foo)\n"})
 	cfg.MacroExpander = nil
-	got, changed := scan.WithGeneratedDefinitions(cfg, nil)
+	got, changed := scan.WithGeneratedDefinitions(cfg, nil, nil)
 	assert.Same(t, scan, got)
 	assert.False(t, changed)
 }

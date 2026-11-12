@@ -26,8 +26,9 @@ import (
 // file.
 //
 // The fields mirror those of scannedFile, so Prescan merges them with the
-// same code. The packages are final: the analysis that found them knew
-// the package of the file (Config.FilePackages, DefaultPackage).
+// same code. Their packages are the ones the analysis of the file gives
+// them (Config.FilePackages, DefaultPackage), so the file's own analysis
+// and the other files agree on where a generated name lives.
 type generatedDefs struct {
 	allDefs []ExternalSymbol
 	globals []ExternalSymbol
@@ -72,7 +73,12 @@ func hasMacroCandidates(exprs []*lisp.LVal) bool {
 // the call. An entry of the tables must be in the file that makes it:
 // the go-to-definition of a use reaches the call, and the tables drop the
 // entry when the file changes.
-func fileGeneratedDefinitions(source []byte, filename string, cfg *Config) generatedDefs {
+//
+// A definition the scan of the text already records is left out. A defun
+// written in the arguments of a macro call, (with-logging (defun h ...)),
+// is found by both, at the same position; recording it twice would list
+// it twice in completion and in the tables.
+func fileGeneratedDefinitions(source []byte, filename string, cfg *Config, textDefs []ExternalSymbol) generatedDefs {
 	s := token.NewScanner(filename, bytes.NewReader(source))
 	exprs, err := rdparser.New(s).ParseProgram()
 	if err != nil {
@@ -81,9 +87,24 @@ func fileGeneratedDefinitions(source []byte, filename string, cfg *Config) gener
 	a := newAnalyzer(ConfigForFile(cfg, filename))
 	a.prescan(exprs, a.root)
 
+	type textKey struct {
+		name      string
+		line, col int
+	}
+	inText := make(map[textKey]bool, len(textDefs))
+	for _, d := range textDefs {
+		if d.Source != nil {
+			inText[textKey{d.Name, d.Source.Line, d.Source.Col}] = true
+		}
+	}
+
 	var g generatedDefs
 	for _, sym := range a.result.Symbols {
 		if sym.GeneratedBy == nil || sym.External || sym.Scope != a.root {
+			continue
+		}
+		if sym.Source != nil && sym.Source.File == filename &&
+			inText[textKey{sym.Name, sym.Source.Line, sym.Source.Col}] {
 			continue
 		}
 		src := sym.Source
@@ -127,8 +148,9 @@ func fileGeneratedDefinitions(source []byte, filename string, cfg *Config) gener
 // cfg must have a MacroExpander whose env holds the workspace macros
 // (LoadWorkspaceMacros), and the tables of a Prescan of w: the package
 // imports and exports decide which heads are macros. Without an
-// expander it returns w. A file that defines a name with a macro call
-// keeps it in the tables until its next WithFile, so the caller computes
+// expander it returns w. WithFile keeps what the calls of a file defined
+// before the change, so the tables do not lose the names meanwhile and
+// the result here reports a change against them; the caller computes
 // them again after a change: for the changed file, or for every file
 // when the macros changed.
 //
@@ -137,25 +159,41 @@ func fileGeneratedDefinitions(source []byte, filename string, cfg *Config) gener
 // call is expanded only when a definition of the text, or of the
 // workspace macros, makes its head a macro.
 //
-// The files are read from disk. A file that cannot be read gives none.
-func (w *WorkspaceScan) WithGeneratedDefinitions(cfg *Config, paths []string) (*WorkspaceScan, bool) {
+// read gives the text of a file, by its path in the scan, and whether it
+// could be read; a file that cannot be read gives no definitions. A nil
+// read reads the file from disk. An editor passes the text it scanned, so
+// the definitions and the scan of a file come from the same text, and its
+// own size limit.
+func (w *WorkspaceScan) WithGeneratedDefinitions(cfg *Config, paths []string, read func(path string) ([]byte, bool)) (*WorkspaceScan, bool) {
 	if cfg == nil || cfg.MacroExpander == nil {
 		return w, false
 	}
 	var todo []int
+	consider := func(i int) {
+		if w.mayGenerate(i) {
+			todo = append(todo, i)
+		}
+	}
 	if paths == nil {
 		for i := range w.paths {
-			todo = append(todo, i)
+			consider(i)
 		}
 	} else {
 		for _, p := range paths {
 			if i := w.find(p); i >= 0 {
-				todo = append(todo, i)
+				consider(i)
 			}
 		}
 	}
 	if len(todo) == 0 {
+		// Before the config is indexed below: most saves land here.
 		return w, false
+	}
+	if read == nil {
+		read = func(path string) ([]byte, bool) {
+			source, err := os.ReadFile(path) // CLI tool: reads user-specified files by design
+			return source, err == nil
+		}
 	}
 
 	fileCfg := *cfg
@@ -180,13 +218,14 @@ func (w *WorkspaceScan) WithGeneratedDefinitions(cfg *Config, paths []string) (*
 			for k := range work {
 				i := todo[k]
 				if !w.results[i].macroCandidates {
+					// It lost its calls: found[k] stays empty.
 					continue
 				}
-				source, err := os.ReadFile(w.paths[i]) // CLI tool: reads user-specified files by design
-				if err != nil {
+				source, ok := read(w.paths[i])
+				if !ok {
 					continue
 				}
-				found[k] = fileGeneratedDefinitions(source, w.paths[i], &fileCfg)
+				found[k] = fileGeneratedDefinitions(source, w.paths[i], &fileCfg, w.results[i].allDefs)
 			}
 		}()
 	}
@@ -202,6 +241,22 @@ func (w *WorkspaceScan) WithGeneratedDefinitions(cfg *Config, paths []string) (*
 		next.results[i].generated = found[k]
 	}
 	return &next, changed
+}
+
+// mayGenerate reports whether file i can have generated definitions, or
+// has some to drop.
+func (w *WorkspaceScan) mayGenerate(i int) bool {
+	return w.results[i].macroCandidates || !w.results[i].generated.empty()
+}
+
+// MayGenerateDefinitions reports whether WithGeneratedDefinitions can
+// change what the file at path gives to the tables: the file has a call
+// that may be a macro call, or definitions that earlier calls made. A
+// caller that must build a config for WithGeneratedDefinitions asks it
+// first, so a save of a file of defun forms costs no more than before.
+func (w *WorkspaceScan) MayGenerateDefinitions(path string) bool {
+	i := w.find(path)
+	return i >= 0 && w.mayGenerate(i)
 }
 
 // sameGenerated reports whether two sets of generated definitions give

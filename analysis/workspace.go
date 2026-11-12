@@ -1209,8 +1209,8 @@ type scannedFile struct {
 	// defines a name (hasMacroCandidates).
 	macroCandidates bool
 	// generated holds what the macro calls of the file define, once
-	// WithGeneratedDefinitions has expanded them. A new scan of the file
-	// has none.
+	// WithGeneratedDefinitions has expanded them. WithFile keeps them
+	// until they are expanded again.
 	generated generatedDefs
 }
 
@@ -1456,6 +1456,10 @@ func (w *WorkspaceScan) WithFile(path string, source []byte) (*WorkspaceScan, bo
 		return &next, true
 	}
 	scanned := scanWorkspaceFile(source, w.paths[i])
+	// Keep what the macro calls of the file defined until
+	// WithGeneratedDefinitions expands them again: the tables keep the
+	// names meanwhile, and it compares the new definitions with these.
+	scanned.generated = w.results[i].generated
 	next.results = slices.Clone(w.results)
 	next.results[i] = scanned
 	next.pkgs = &loadPackagesMemo{}
