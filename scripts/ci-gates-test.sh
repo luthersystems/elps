@@ -1617,6 +1617,9 @@ PY_WMUT
 esac
 rm -rf "$docsonly_tmp"
 
+assert_exit 0 "every workflow sets a top-level permissions: block (CodeQL missing-workflow-permissions)" \
+	python3 "${SCRIPT_DIR}/workflow-permissions-test.py"
+
 assert_exit 0 "go.mod's toolchain line is the only statement of the Go version" \
 	python3 "${SCRIPT_DIR}/go-pin-sync-test.py"
 
