@@ -191,7 +191,7 @@ func (w *WorkspaceScan) WithGeneratedDefinitions(cfg *Config, paths []string, re
 	}
 	if read == nil {
 		read = func(path string) ([]byte, bool) {
-			source, err := os.ReadFile(path) // CLI tool: reads user-specified files by design
+			source, err := os.ReadFile(path) //nolint:gosec // G304: reads a workspace file the scan listed
 			return source, err == nil
 		}
 	}

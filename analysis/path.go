@@ -31,7 +31,7 @@ func normalizeViaExistingParent(path string) (string, bool) {
 	var suffix []string
 
 	for {
-		if _, err := os.Stat(dir); err == nil {
+		if _, err := os.Stat(dir); err == nil { //nolint:gosec // G703: NormalizePath stats the editor or CLI path it is given, by design
 			resolvedDir, err := filepath.EvalSymlinks(dir)
 			if err != nil {
 				return "", false

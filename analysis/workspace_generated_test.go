@@ -81,7 +81,7 @@ func TestWithGeneratedDefinitions(t *testing.T) {
 	// expanded again, and the expansion reports the change against them:
 	// a save that removes the call must reach the other files.
 	app := filepath.Join(root, "app.lisp")
-	src, err := os.ReadFile(app)
+	src, err := os.ReadFile(app) //nolint:gosec // G304: a file this test wrote
 	require.NoError(t, err)
 	rescanned, _ := gen.WithFile(app, src)
 	assert.Len(t, namesOf(rescanned.Prescan().PkgAllSymbols["lib"], "foo", "hidden"), 2)
