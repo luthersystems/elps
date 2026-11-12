@@ -1620,11 +1620,10 @@ func (s *rangePath) Get(in *lisp.LVal) (*lisp.LVal, error) {
 	// spare capacity (issue #373); alias, so the window carries the source's
 	// seal for the writes that land INSIDE it (see alias).
 	cells = cells[from:to:to]
-	// The window aliases the source's cells, so a Go nil among them would
-	// reach the caller inside the result.
-	if err := checkCells(cells); err != nil {
-		return nil, err
-	}
+	// No Go-nil-cell scan here: it would make this O(window) for every
+	// Path API caller, where aliasing is O(1). The builtin read path, which
+	// is where the old whole-document gate used to catch a host-built nil
+	// cell, scans the window in getPath instead (see copyOp.checkReadCells).
 	return alias(in, cells), nil
 }
 

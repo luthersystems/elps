@@ -256,6 +256,27 @@ func TestQueryGetRangeRefusesGoNilCell(t *testing.T) {
 	got = callBuiltin(testEnv(t), BuiltinQueryGet, doc, lisp.String("xs"), first)
 	require.NotEqual(t, lisp.LError, got.Type, "%v", got)
 	assert.Equal(t, "(vector 1)", got.String())
+
+	// Under an iterator, a window holding a nil cell fails that element, which
+	// yields () like any element the rest of the path cannot read; it never
+	// hands Lisp the nil cell.
+	nested := mapHolding("xs", lisp.Vector([]*lisp.LVal{lisp.Vector([]*lisp.LVal{lisp.Int(1), nil})}))
+	got = callBuiltin(testEnv(t), BuiltinQueryGet, nested, lisp.String("xs"), lisp.Symbol("*"), rng)
+	require.NotEqual(t, lisp.LError, got.Type, "%v", got)
+	assert.Equal(t, "(vector ())", got.String())
+}
+
+// TestRangeGetPathAPIDoesNotScanWindow pins that the exported Path API's
+// range Get stays O(1) aliasing: the Go-nil-cell scan belongs to the builtin
+// read path only (copyOp.checkReadCells), so an embedder's Path.Get returns
+// the window as it is, as it did before #960.
+func TestRangeGetPathAPIDoesNotScanWindow(t *testing.T) {
+	src := lisp.Vector([]*lisp.LVal{lisp.Int(1), nil})
+	got, err := Root(Chain(Range(0, 2, false))).Get(src)
+	require.NoError(t, err)
+	_, data := got.ArrayParts()
+	require.Len(t, data.Cells, 2)
+	assert.Nil(t, data.Cells[1])
 }
 
 // TestValidateDocumentRefusesGoNilCell pins that the write gate reports a

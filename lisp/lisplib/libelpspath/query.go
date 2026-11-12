@@ -279,7 +279,16 @@ func BuiltinQueryGet(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 		return env.Error(err)
 	}
 	if !hasIterStep(steps) {
-		data, opErr := path.Get(val)
+		var data *lisp.LVal
+		var opErr error
+		if hasRangeStep(path) {
+			// A range window aliases the document's cells; this op only
+			// asks getPath to refuse a Go nil among them (see
+			// copyOp.checkReadCells). Plain key/index reads skip it.
+			data, opErr = getPath(path, val, &copyOp{checkReadCells: true})
+		} else {
+			data, opErr = path.Get(val)
+		}
 		if opErr != nil {
 			return env.Error(opErr)
 		}
@@ -287,6 +296,7 @@ func BuiltinQueryGet(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	}
 	// An iterator's work is counted and paid for (budget.go).
 	op := newQueryOp(env)
+	op.checkReadCells = true
 	data, err := getPath(path, val, op)
 	return opResult(env, op, data, err)
 }
