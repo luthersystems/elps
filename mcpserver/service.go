@@ -716,11 +716,19 @@ func (s *service) buildWorkspaceState(root, fingerprint string, validatedAt time
 		Excludes: s.excludePatterns,
 	}
 	var preamble []*lisp.LVal
-	if root != "" {
-		prescan, err := analysis.PrescanWorkspace(root, scanCfg)
-		if err != nil {
-			return nil, err
-		}
+	var scan *analysis.WorkspaceScan
+	reg := s.registry
+	if s.env != nil {
+		reg = s.env.Runtime.Registry
+	}
+	var stdlib map[string][]analysis.ExternalSymbol
+	if reg != nil {
+		stdlib = analysis.ExtractPackageExports(reg)
+	}
+	// setTables sets the workspace tables of the state from prescan and
+	// the exports of the registry. It runs again once the macro calls of
+	// the workspace are expanded (below).
+	setTables := func(prescan *analysis.WorkspacePrescan) {
 		state.cfg.ExtraGlobals = prescan.AllDefs
 		state.cfg.PackageExports = prescan.PkgExports
 		state.cfg.PackageSymbols = prescan.PkgAllSymbols
@@ -730,25 +738,32 @@ func (s *service) buildWorkspaceState(root, fingerprint string, validatedAt time
 		state.cfg.FilePackages = prescan.FilePackages
 		state.cfg.RecordMethodsByFile = prescan.RecordMethodsByFile
 		state.symbols = prescan.AllDefs
-		preamble = prescan.Preamble
-	}
-
-	reg := s.registry
-	if s.env != nil {
-		reg = s.env.Runtime.Registry
-	}
-	if reg != nil {
-		stdlib := analysis.ExtractPackageExports(reg)
-		if state.cfg.PackageExports == nil {
-			state.cfg.PackageExports = stdlib
-		} else {
+		if stdlib != nil {
+			if state.cfg.PackageExports == nil {
+				state.cfg.PackageExports = make(map[string][]analysis.ExternalSymbol, len(stdlib))
+			}
 			for pkgName, syms := range stdlib {
 				state.cfg.PackageExports[pkgName] = mergeExternalSymbols(state.cfg.PackageExports[pkgName], syms)
 			}
 		}
+		for pkgName, syms := range state.cfg.PackageExports {
+			state.cfg.PackageExports[pkgName] = deduplicateExports(syms)
+		}
 	}
-	for pkgName, syms := range state.cfg.PackageExports {
-		state.cfg.PackageExports[pkgName] = deduplicateExports(syms)
+	if root != "" {
+		var err error
+		scan, err = analysis.ScanWorkspaceFiles(root, scanCfg)
+		if err != nil {
+			return nil, err
+		}
+		prescan := scan.Prescan()
+		setTables(prescan)
+		preamble = prescan.Preamble
+	} else if stdlib != nil {
+		state.cfg.PackageExports = stdlib
+		for pkgName, syms := range state.cfg.PackageExports {
+			state.cfg.PackageExports[pkgName] = deduplicateExports(syms)
+		}
 	}
 	// Install the macro expander BEFORE scanning references (issue #403).
 	// ScanWorkspaceRefs analyses every workspace file with this Config, and
@@ -785,6 +800,15 @@ func (s *service) buildWorkspaceState(root, fingerprint string, validatedAt time
 				"workspace_root", root, "unloaded_forms", len(preamble)-load.Unfinished)
 		}
 		state.cfg.MacroExpander = s.expander
+		// A call of a workspace macro, such as (defhelper foo), defines
+		// foo only when it expands. Add what the macro calls of each file
+		// define to the tables, so the other files resolve those names
+		// too (luthersystems/elps#953).
+		if scan != nil {
+			if gen, changed := scan.WithGeneratedDefinitions(state.cfg, nil); changed {
+				setTables(gen.Prescan())
+			}
+		}
 	}
 	if root != "" {
 		state.refs = analysis.ScanWorkspaceRefs(root, state.cfg, scanCfg)

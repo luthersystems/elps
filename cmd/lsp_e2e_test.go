@@ -432,3 +432,83 @@ func TestLSPCommand_StdioWorkspace(t *testing.T) {
 		t.Fatal("the server did not exit")
 	}
 }
+
+// TestLSPCommand_StdioMacroDefinitionsAcrossFiles runs the workspace of
+// luthersystems/elps#953 through elps lsp over stdio, as an editor does. A
+// call of a workspace macro in app.lisp defines foo, and other.lisp calls
+// foo. The scan of the text cannot see foo, so the index adds what the
+// macro calls of each file define once the macros load, and a save of
+// either file keeps that current.
+func TestLSPCommand_StdioMacroDefinitionsAcrossFiles(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+	root := t.TempDir()
+	files := map[string]string{
+		"macros.lisp": "(defmacro defhelper (name) (quasiquote (defun (unquote name) () 1)))\n",
+		"app.lisp":    "(defhelper foo)\n(foo)\n",
+		"other.lisp":  "(foo)\n",
+	}
+	for name, src := range files {
+		require.NoError(t, os.WriteFile(filepath.Join(root, name), []byte(src), 0o600))
+	}
+	uri := func(name string) string { return "file://" + filepath.Join(root, name) }
+
+	c := startLSPStdio(t)
+	c.request("initialize", map[string]any{
+		"processId": nil, "rootUri": "file://" + root, "capabilities": map[string]any{},
+	}, nil)
+	c.notify("initialized", map[string]any{})
+	for _, name := range []string{"app.lisp", "other.lisp"} {
+		c.notify("textDocument/didOpen", map[string]any{"textDocument": map[string]any{
+			"uri": uri(name), "languageId": "lisp", "version": 1, "text": files[name],
+		}})
+	}
+	// save writes a new text of name to disk and saves it, as an editor
+	// does, and returns the next diagnostics of other.lisp.
+	version := 1
+	save := func(name, text string) []string {
+		t.Helper()
+		require.NoError(t, os.WriteFile(filepath.Join(root, name), []byte(text), 0o600))
+		version++
+		c.notify("textDocument/didOpen", map[string]any{"textDocument": map[string]any{
+			"uri": uri(name), "languageId": "lisp", "version": version, "text": text,
+		}})
+		m := c.mark()
+		c.notify("textDocument/didSave", map[string]any{"textDocument": map[string]any{"uri": uri(name)}})
+		msgs, _ := c.diagnosticsAfter(m, uri("other.lisp"))
+		return msgs
+	}
+
+	// The first analysis of other.lisp waits for the index build.
+	m := c.mark()
+	var hover struct {
+		Contents struct {
+			Value string `json:"value"`
+		} `json:"contents"`
+	}
+	pos := map[string]any{
+		"textDocument": map[string]any{"uri": uri("other.lisp")},
+		"position":     map[string]any{"line": 0, "character": 2},
+	}
+	c.request("textDocument/hover", pos, &hover)
+	msgs, _ := c.diagnosticsAfter(m, uri("other.lisp"))
+	assert.Empty(t, msgs, "elps#953: foo, which a macro call in app.lisp defines, resolves in other.lisp")
+	assert.Contains(t, hover.Contents.Value, "foo")
+
+	// Definition of foo in other.lisp leads to the call that defines it.
+	var def lspLocation
+	c.request("textDocument/definition", pos, &def)
+	assert.Equal(t, "app.lisp:0:11", def.String())
+
+	// A save of the macro that stops it defining its argument: foo is
+	// undefined again. The save loads the macro again, so the calls of
+	// every file are expanded again.
+	assert.Equal(t, []string{"undefined symbol: foo"},
+		save("macros.lisp", "(defmacro defhelper (name) '(defun fixed () 1))\n"))
+	assert.Empty(t, save("macros.lisp", files["macros.lisp"]), "the macro defines foo again")
+
+	// A save of app.lisp that defines bar in place of foo.
+	assert.Equal(t, []string{"undefined symbol: foo"}, save("app.lisp", "(defhelper bar)\n(bar)\n"))
+	assert.Empty(t, save("app.lisp", files["app.lisp"]))
+}

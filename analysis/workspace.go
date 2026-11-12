@@ -404,6 +404,8 @@ type fileScan struct {
 	usePackages map[string][]string
 	// preamble contains package setup and definition forms.
 	preamble []*lisp.LVal
+	// macroCandidates: see hasMacroCandidates.
+	macroCandidates bool
 	// filePkg is the file's first declared package.
 	filePkg string
 	// firstInPkgLine is the first package declaration line.
@@ -460,7 +462,7 @@ func scanFileFull(source []byte, filename string) fileScan {
 		}
 	}
 
-	return fileScan{globals: globals, pkgs: pkgs, defs: defs, pkgAll: pkgAll, usePackages: usePackages, preamble: preamble, filePkg: filePkg, firstInPkgLine: firstInPkgLine, recordMethods: fileRecordMethods(source, func() ([]*lisp.LVal, error) { return exprs, nil })}
+	return fileScan{globals: globals, pkgs: pkgs, defs: defs, pkgAll: pkgAll, usePackages: usePackages, preamble: preamble, macroCandidates: hasMacroCandidates(exprs), filePkg: filePkg, firstInPkgLine: firstInPkgLine, recordMethods: fileRecordMethods(source, func() ([]*lisp.LVal, error) { return exprs, nil })}
 }
 
 // extractDefinitions collects top-level definitions from pre-parsed expressions.
@@ -1203,23 +1205,31 @@ type scannedFile struct {
 	// lastInPackage is the package of the last in-package of a literal
 	// name in preamble, or "" (see WorkspaceScan.packageAfter).
 	lastInPackage string
+	// macroCandidates: a top-level form may be a macro call that
+	// defines a name (hasMacroCandidates).
+	macroCandidates bool
+	// generated holds what the macro calls of the file define, once
+	// WithGeneratedDefinitions has expanded them. A new scan of the file
+	// has none.
+	generated generatedDefs
 }
 
 // scanWorkspaceFile scans one file for a WorkspaceScan.
 func scanWorkspaceFile(source []byte, path string) scannedFile {
 	scanned := scanFileFull(source, path)
 	return scannedFile{
-		globals:        scanned.globals,
-		pkgs:           scanned.pkgs,
-		allDefs:        scanned.defs,
-		pkgAll:         scanned.pkgAll,
-		defForms:       extractDefFormSpecs(scanned.defs),
-		preamble:       scanned.preamble,
-		usePackages:    scanned.usePackages,
-		filePkg:        scanned.filePkg,
-		firstInPkgLine: scanned.firstInPkgLine,
-		recordMethods:  scanned.recordMethods,
-		lastInPackage:  finalPackage(scanned.preamble, ""),
+		globals:         scanned.globals,
+		pkgs:            scanned.pkgs,
+		allDefs:         scanned.defs,
+		pkgAll:          scanned.pkgAll,
+		defForms:        extractDefFormSpecs(scanned.defs),
+		preamble:        scanned.preamble,
+		usePackages:     scanned.usePackages,
+		filePkg:         scanned.filePkg,
+		firstInPkgLine:  scanned.firstInPkgLine,
+		recordMethods:   scanned.recordMethods,
+		lastInPackage:   finalPackage(scanned.preamble, ""),
+		macroCandidates: scanned.macroCandidates,
 	}
 }
 
@@ -1715,13 +1725,18 @@ func (w *WorkspaceScan) Prescan() *WorkspacePrescan {
 	numExports := make(map[string]int)
 	numSymbols := make(map[string]int)
 	for i := range results {
-		numGlobals += len(results[i].globals)
-		numDefs += len(results[i].allDefs)
-		for pkg, syms := range results[i].pkgs {
-			numExports[pkg] += len(syms)
+		gen := &results[i].generated
+		numGlobals += len(results[i].globals) + len(gen.globals)
+		numDefs += len(results[i].allDefs) + len(gen.allDefs)
+		for _, t := range []map[string][]ExternalSymbol{results[i].pkgs, gen.pkgs} {
+			for pkg, syms := range t {
+				numExports[pkg] += len(syms)
+			}
 		}
-		for pkg, syms := range results[i].pkgAll {
-			numSymbols[pkg] += len(syms)
+		for _, t := range []map[string][]ExternalSymbol{results[i].pkgAll, gen.pkgAll} {
+			for pkg, syms := range t {
+				numSymbols[pkg] += len(syms)
+			}
 		}
 	}
 	if numGlobals > 0 {
@@ -1850,6 +1865,24 @@ func (w *WorkspaceScan) Prescan() *WorkspacePrescan {
 		if userImports, ok := prescan.PackageImports[userPkg]; ok {
 			prescan.PackageImports[defaultPkg] = appendUnique(prescan.PackageImports[defaultPkg], userImports...)
 			delete(prescan.PackageImports, userPkg)
+		}
+	}
+
+	// The definitions that macro calls make (WithGeneratedDefinitions).
+	// They go in after the remap above: the analysis that found them
+	// already gave them the package of their file.
+	for i := range results {
+		gen := &results[i].generated
+		if gen.empty() {
+			continue
+		}
+		prescan.AllDefs = append(prescan.AllDefs, gen.allDefs...)
+		prescan.ExportedGlobals = append(prescan.ExportedGlobals, gen.globals...)
+		for pkg, syms := range gen.pkgs {
+			prescan.PkgExports[pkg] = append(prescan.PkgExports[pkg], syms...)
+		}
+		for pkg, syms := range gen.pkgAll {
+			prescan.PkgAllSymbols[pkg] = append(prescan.PkgAllSymbols[pkg], syms...)
 		}
 	}
 
