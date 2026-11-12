@@ -144,8 +144,15 @@ func TestCyclicValueDoesNotKillTheProcess(t *testing.T) {
 			cmd.Env = append(os.Environ(), cyclicWalkEnv+"="+name)
 			out, err := testdeadline.RunChild(cmd, time.Minute)
 			require.NoError(t, err, "the %s walk must not kill the process:\n%s", name, out)
-			assert.Contains(t, string(out), "RESULT: refused",
-				"the %s walk must refuse the cyclic value:\n%s", name, out)
+			// A read is path-scoped (#960): it answers on a cyclic value
+			// in finitely many steps rather than refusing it. What matters
+			// for #393 is that it survives either way.
+			want := "RESULT: refused"
+			if name == "builtin-get" {
+				want = "RESULT: answered"
+			}
+			assert.Contains(t, string(out), want,
+				"the %s walk did not end as expected:\n%s", name, out)
 		})
 	}
 }
@@ -162,7 +169,7 @@ func TestCyclicWalkHelper(t *testing.T) {
 	// same thing far more cheaply, and no guarded walk comes near it.
 	debug.SetMaxStack(16 << 20)
 
-	var refused bool
+	var refused, answered bool
 	switch walk {
 	case "typecheck":
 		refused = okSimpleType(cyclicVector()) != nil
@@ -171,10 +178,14 @@ func TestCyclicWalkHelper(t *testing.T) {
 		refused = err != nil
 	case "builtin-get":
 		// The reproduction from issue #393, driven through the builtin:
-		// (set 'v (vector 1 2)) (append! v v) (elpspath:? v 0)
+		// (set 'v (vector 1 2)) (append! v v) (elpspath:? v 0), plus an
+		// iterator whose result holds the cycle. Neither may recurse
+		// through it; since #960 both answer.
 		env := testEnv(t)
-		lerr := BuiltinQueryGet(env, lisp.QExpr([]*lisp.LVal{cyclicVector(), lisp.Int(0)}))
-		refused = lerr.Type == lisp.LError
+		v := cyclicVector()
+		first := BuiltinQueryGet(env, lisp.QExpr([]*lisp.LVal{v, lisp.Int(0)}))
+		all := BuiltinQueryGet(env, lisp.QExpr([]*lisp.LVal{v, lisp.Symbol("*")}))
+		answered = first.Type != lisp.LError && all.Type != lisp.LError
 	case "builtin-set-copy":
 		env := testEnv(t)
 		args := lisp.QExpr([]*lisp.LVal{cyclicMap("a", "b"), lisp.String("k"), lisp.String("v")})
@@ -185,6 +196,9 @@ func TestCyclicWalkHelper(t *testing.T) {
 	}
 	if refused {
 		fmt.Println("RESULT: refused")
+	}
+	if answered {
+		fmt.Println("RESULT: answered")
 	}
 }
 

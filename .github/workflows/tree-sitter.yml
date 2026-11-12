@@ -40,6 +40,12 @@ on:
 # scheduled/dispatched runs always get docs_only=false, so they run everything.
 # What counts as docs-only is documented in that script.
 
+# Least privilege (code scanning: actions/missing-workflow-permissions). Every
+# job here only reads the repository; a job that needs more sets its own
+# `permissions:`.
+permissions:
+  contents: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true

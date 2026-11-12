@@ -33,6 +33,11 @@ func oracleOkSimpleType(in *lisp.LVal) error {
 }
 
 func oracleOkSimpleTypeGuarded(in *lisp.LVal, g cycleGuard) error {
+	// The validator reports a Go nil cell instead of panicking on it, so
+	// the reference walk does too.
+	if in == nil {
+		return errNilCell
+	}
 	if in.IsNil() {
 		return nil
 	}
@@ -239,7 +244,7 @@ func (g *docGen) fault() *lisp.LVal {
 		v := g.in.hostMap("failing-"+strconv.Itoa(len(g.in.maps)), nil, nil)
 		g.in.maps[v].err = goldenHostError
 		return v
-	case 7: // a Go nil cell: the walk panics
+	case 7: // a Go nil cell: the walk refuses it with errNilCell
 		return lisp.SExpr([]*lisp.LVal{lisp.Int(1), nil})
 	default: // an array with no cells: the walk panics
 		return &lisp.LVal{Type: lisp.LArray}

@@ -364,9 +364,12 @@ func skipOptionMark(s string, i int) int {
 //
 // The Path it returns is an ordinary one: nothing distinguishes a parsed
 // path from one assembled by hand or by ArgsToPath, and the same seven
-// operations apply. A caller that is about to hand a document to one of them
-// should run okSimpleType over the document first, which is what the
-// builtins do -- see that function for why it is not optional.
+// operations apply. A read (Get) needs no whole-document check: it visits
+// only the containers on its path and refuses a bad shape it steps into
+// (#960). A caller about to hand a document to a write should run
+// ValidateDocument over it first, as the write builtins do -- a write may
+// copy or rebuild any part of the document, so it needs the whole graph to
+// be sound (see okSimpleType).
 //
 // ONE WART. The jq optional-selector suffix "?" is ACCEPTED AND DISCARDED.
 // In jq, ".a?" suppresses the error a non-object .a would raise; here every

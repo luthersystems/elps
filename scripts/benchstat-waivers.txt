@@ -90,6 +90,19 @@
 # and `waiver-unused` when the row is there and no longer regressing, which is
 # the signal to delete the entry.
 #
+# THE @gomaxprocs LINE
+# --------------------
+# `@gomaxprocs N` declares the GOMAXPROCS the benchmark names below are
+# written for.  At most one per file.  Without it, a run that does not say its
+# GOMAXPROCS (the self-test, a local bench-compare.sh) reads ANY trailing
+# -<digits> as the suffix, so a benchmark whose own name ends in a number
+# (Case/uppercase/ascii-mixed-16) cannot be waived.  With it, such a run reads
+# the names as written for N.  A run that says another GOMAXPROCS stops with
+# exit 2: the names would not bind there.  This file is for the gated
+# `benchmark` job, which runs at GOMAXPROCS=1.
+
+@gomaxprocs 1
+
 # ---------------------------------------------------------------------------
 # pkg | benchmark | metric | ceiling | expires | issue | reason
 # ---------------------------------------------------------------------------

@@ -84,7 +84,9 @@ type comparison struct {
 //
 //	n == 0  unknown (legacy): any trailing -<digits> is taken as the suffix.
 //	        This is what every caller got before #767 and still gets when it
-//	        passes nothing (substrate runs at 4, where it is exact).
+//	        passes nothing (substrate runs at 4, where it is exact).  A
+//	        waiver file's "@gomaxprocs N" line checks its waivers at N
+//	        instead; rows are still stripped by this rule.
 //	n == 1  `go test` appends NOTHING, so a trailing -<digits> is part of the
 //	        benchmark's own name (libjson Package/get-nested-baseline-2) and
 //	        is never stripped.
