@@ -83,8 +83,9 @@ func TestWrapperCopyIsolation(t *testing.T) {
 	}
 }
 
-// TestWrapperCyclesRejected checks both public builtin validation and the
-// independently guarded Go copy API, for cycles through either wrapper type.
+// TestWrapperCyclesRejected checks both public write-builtin validation and
+// the independently guarded Go copy API, for cycles through either wrapper
+// type. Reads are path-scoped (#960) and answer when the cycle is off-path.
 func TestWrapperCyclesRejected(t *testing.T) {
 	for _, wrapper := range []struct {
 		name string
@@ -98,12 +99,18 @@ func TestWrapperCyclesRejected(t *testing.T) {
 			require.ErrorIs(t, okSimpleType(doc), errCyclicValue)
 			_, err := copyLVal(doc, 0)
 			require.ErrorIs(t, err, errCyclicValue)
+			// A read of "x" never reaches the wrapped cycle, so it answers
+			// (#960); only the writes, which may copy the whole document,
+			// still refuse it.
+			got := BuiltinQueryGet(testEnv(t), lisp.QExpr([]*lisp.LVal{doc, lisp.String("x")}))
+			require.NotEqual(t, lisp.LError, got.Type, "%v", got)
+			assert.Equal(t, "1", got.String())
 			for _, op := range []struct {
 				name string
 				run  lisp.LBuiltin
 				set  bool
 			}{
-				{"get", BuiltinQueryGet, false}, {"set", BuiltinQuerySet, true}, {"set!", BuiltinQuerySetMutate, true},
+				{"set", BuiltinQuerySet, true}, {"set!", BuiltinQuerySetMutate, true},
 				{"delete", BuiltinQueryDelete, false}, {"delete!", BuiltinQueryDeleteMutate, false},
 				{"nil", BuiltinQueryNil, false}, {"nil!", BuiltinQueryNilMutate, false},
 			} {

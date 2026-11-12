@@ -17,8 +17,17 @@
 // functions, are opaque leaves shared by reference. Further steps into a
 // leaf fail with its type and location. Out-of-range integer writes leave the
 // document unchanged. In-place list element edits remain unsupported.
-// Containers, including those inside tagged and quote wrappers, must be
-// acyclic, and arrays must be one-dimensional. Opaque internals are not walked.
+// The writes validate the whole document first: containers, including those
+// inside tagged and quote wrappers, must be acyclic, and arrays must be
+// one-dimensional, because a write can copy or rebuild any part of it. ? with
+// at least one step does not (#960); ? with none still does, because there is
+// no path to scope it to and embedders use it as a write gate. A read with a
+// finite path never walks beyond the containers on
+// that path (and the elements an iterator fans out over), and never recurses
+// into the value it returns, so a fault elsewhere cannot change its answer;
+// validating the whole document made every read cost O(document). The
+// accessors on the path refuse a bad shape they step into themselves. Opaque
+// internals are not walked.
 //
 //	(elpspath:?      val &rest steps)             ; get
 //	(elpspath:?set!  val &rest steps-and-value)   ; set (mutating)
@@ -251,15 +260,35 @@ func BuiltinQueryGet(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	}
 	val := args.Cells[0]
 	steps := args.Cells[1:]
-	if err := okSimpleType(val); err != nil {
-		return env.Error(err)
+	// With no steps there is no path to scope the read to, and
+	// (elpspath:? v) is the idiom embedders use as a whole-document write
+	// gate (substrate's checkSimpleType), so it keeps the gate. Hot reads
+	// always have steps and never pay for it.
+	if len(steps) == 0 {
+		if err := okSimpleType(val); err != nil {
+			return env.Error(err)
+		}
 	}
+	// Otherwise no whole-document gate, unlike the writes (#960): the read only
+	// visits containers on its path, and the accessors refuse a bad shape
+	// when the path steps into one -- toCells an array that is not
+	// one-dimensional, indexTypeError any wrapper or leaf, and errNilCell a
+	// host-built Go nil cell.
 	path, err := ArgsToPath(steps)
 	if err != nil {
 		return env.Error(err)
 	}
 	if !hasIterStep(steps) {
-		data, opErr := path.Get(val)
+		var data *lisp.LVal
+		var opErr error
+		if hasRangeStep(path) {
+			// A range window aliases the document's cells; this op only
+			// asks getPath to refuse a Go nil among them (see
+			// copyOp.checkReadCells). Plain key/index reads skip it.
+			data, opErr = getPath(path, val, &copyOp{checkReadCells: true})
+		} else {
+			data, opErr = path.Get(val)
+		}
 		if opErr != nil {
 			return env.Error(opErr)
 		}
@@ -267,6 +296,7 @@ func BuiltinQueryGet(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	}
 	// An iterator's work is counted and paid for (budget.go).
 	op := newQueryOp(env)
+	op.checkReadCells = true
 	data, err := getPath(path, val, op)
 	return opResult(env, op, data, err)
 }

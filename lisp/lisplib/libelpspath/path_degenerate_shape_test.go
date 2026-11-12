@@ -238,7 +238,8 @@ func TestExtremeRangeBoundsDoNotPanic(t *testing.T) {
 // TestBuiltinSurfaceDoesNotPanic is the same sweep one layer up.
 //
 // It is not redundant with the Go-API sweep: the builtins parse their steps
-// from lisp values first (argToStep), run okSimpleType over the document,
+// from lisp values first (argToStep), run okSimpleType over the document
+// (writes, and a read with no steps; a read with a path skips it, #960),
 // and only then build a path -- three stages the Go API skips, each able to
 // reach the engine with a shape the API could not construct.
 //
@@ -329,8 +330,8 @@ func TestBuiltinSurfaceDoesNotPanic(t *testing.T) {
 // `#<array dims='()>` became `(vector ())`. No error, no panic, a different
 // value.
 //
-// Only the Go API reached it: the builtins run okSimpleType over the whole
-// document first, and that walk refuses the shape wherever it sits. Both
+// Only the Go API reached it: the write builtins run okSimpleType over the
+// whole document first, and that walk refuses the shape wherever it sits. Both
 // routes are asserted here so the pair cannot drift apart again -- three
 // sites disagreeing about one rule is what let the original crash through.
 func TestNestedZeroDimensionalArrayIsRefusedByTheCopy(t *testing.T) {

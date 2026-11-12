@@ -275,7 +275,8 @@ func TestEveryValueTypeNeverPanics(t *testing.T) {
 	}
 
 	// The same crossing again through the Go API, which is NOT redundant:
-	// the builtins run okSimpleType before they build a path, and that gate
+	// the write builtins (and a no-step read) run okSimpleType before they
+	// build a path, and that gate
 	// duplicates several of the accessor's own checks. Measured -- reverting
 	// toCells' dimensionality guard on its own left this test green through
 	// the builtin arm alone, because okSimpleContainerContents caught the
@@ -314,24 +315,37 @@ func TestPathologicalValuesNeverPanic(t *testing.T) {
 	t.Parallel()
 
 	t.Run("cycles", func(t *testing.T) {
-		// A value that contains itself must be REFUSED, not walked forever
-		// and not crashed on (issue #393). Every operation, since each runs
-		// its own walk.
+		// A write on a value that contains itself must be REFUSED, not
+		// walked forever and not crashed on (issue #393). Every operation,
+		// since each runs its own walk.
 		for _, src := range []string{
-			`(let ([v (vector 1 2)]) (append! v v) (elpspath:? v 2 2 2 2 0))`,
-			`(let ([v (vector 1 2)]) (append! v v) (elpspath:? v '*))`,
 			`(let ([v (vector 1 2)]) (append! v v) (elpspath:?set v 0 9))`,
 			`(let ([v (vector 1 2)]) (append! v v) (elpspath:?set! v 0 9))`,
 			`(let ([v (vector 1 2)]) (append! v v) (elpspath:?del v 0))`,
 			`(let ([v (vector 1 2)]) (append! v v) (elpspath:?del! v '(range 0)))`,
 			`(let ([v (vector 1 2)]) (append! v v) (elpspath:?nil v '(range 0)))`,
 			`(let ([m (sorted-map "a" 1)]) (assoc! m "self" m) (elpspath:?set m "a" 9))`,
-			// A cycle created THROUGH the operation under test.
-			`(let ([v (vector 1 2)]) (elpspath:?set! v 0 v) (elpspath:? v 0 0 0 0))`,
 		} {
 			env := noPanicEnv(t)
 			res := evalNoPanic(t, env, "cycle", src)
 			require1Error(t, res, src)
+		}
+		// A read takes a finite number of steps and never recurses into
+		// what it returns, so it ANSWERS on a cyclic value rather than
+		// refusing it (#960, which dropped the whole-document gate from
+		// reads). These were refusals before; the property kept is that
+		// none walks forever or panics.
+		for _, tc := range []struct{ src, want string }{
+			{`(let ([v (vector 1 2)]) (append! v v) (elpspath:? v 2 2 2 2 0))`, "1"},
+			{`(let ([v (vector 1 2)]) (append! v v) (elpspath:? v '*))`, "(vector 1 2 (vector 1 2 #<cycle>))"},
+			// A cycle created THROUGH the operation under test.
+			{`(let ([v (vector 1 2)]) (elpspath:?set! v 0 v) (elpspath:? v 0 0 0 0))`, "(vector #<cycle> 2)"},
+		} {
+			env := noPanicEnv(t)
+			res := evalNoPanic(t, env, "cycle", tc.src)
+			if res.Type == lisp.LError || res.String() != tc.want {
+				t.Errorf("a finite read of a cyclic value must answer %s, got %v\n  %s", tc.want, res, tc.src)
+			}
 		}
 	})
 

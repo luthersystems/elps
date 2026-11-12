@@ -176,6 +176,12 @@ type copyOp struct {
 	work      int
 	iterWork  int
 	iterDepth int
+	// checkReadCells makes getPath refuse a Go nil cell inside a range
+	// window. The builtins set it: they lost the whole-document gate that
+	// used to refuse such a cell (#960), and must not hand Lisp a value
+	// holding one. The exported Path API leaves it off so a range Get stays
+	// O(1) aliasing.
+	checkReadCells bool
 }
 
 // newCopyOp returns the copy state for one operation bounded by limit.

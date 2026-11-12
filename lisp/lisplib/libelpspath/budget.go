@@ -212,6 +212,20 @@ func getPath(p Path, in *lisp.LVal, op *copyOp) (*lisp.LVal, error) {
 		return p.getOp(in, op)
 	case *iterPath:
 		return p.getOp(in, op)
+	case *rangePath:
+		out, err := p.Get(in)
+		if err != nil || op == nil || !op.checkReadCells {
+			return out, err
+		}
+		// The window aliases the source's cells; see copyOp.checkReadCells.
+		cells, cerr := toCells(out)
+		if cerr != nil {
+			return nil, cerr
+		}
+		if err := checkCells(cells); err != nil {
+			return nil, err
+		}
+		return out, nil
 	}
 	return p.Get(in)
 }

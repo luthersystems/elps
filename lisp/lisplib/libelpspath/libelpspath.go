@@ -36,11 +36,16 @@ functions and natives. Reads may return them and writes
 may store them. A further path step into a leaf raises an error naming
 its type and location. Copies share opaque leaves by reference; mutation
 of their storage outside elpspath is visible through both documents.
-Containers must be acyclic, and arrays must have exactly one dimension;
-every operation checks this throughout the document, including off-path
-containers and the contents of tagged values and quote wrappers.
-New values pass the same container check. Function bodies and captured
-environments remain opaque and shared; they are not walked.
+Writes need containers that are acyclic and arrays with exactly one
+dimension, and check this throughout the document, including off-path
+containers and the contents of tagged values and quote wrappers, because a
+write may copy or rebuild any of them. New values pass the same check.
+A read (?) with a path checks only what that path steps into: it never
+walks beyond its path or into the value it returns, so a fault elsewhere
+cannot change its answer, and its cost follows the path rather than the
+document. A read with no path checks the whole document, as writes do.
+Function bodies and captured environments remain opaque and shared; they
+are not walked.
 
 An iterator retains its per-element error handling: reads substitute nil
 for a failed element path, and writes leave that element unchanged.
@@ -179,9 +184,10 @@ var builtins = []lisp.LBuiltinDef{
 
 		Converting on each call is slower than one string-path operation,
 		since it parses AND builds a list. How much the caching is worth
-		depends on document size -- every operation first walks the whole
-		document to validate it, so on a large document the parse is
-		noise and on a small one it dominates.`)),
+		depends on the operation: a write first walks the whole document to
+		validate it, so on a large document the parse is noise, but a read
+		(?) walks only its path, so for reads the parse can dominate at any
+		document size.`)),
 	lisp.DropsArgList(libutil.FunctionDoc("?set!", lisp.Formals("val", lisp.VarArgSymbol, "steps-and-value"), BuiltinQuerySetMutate,
 		`Set value at a path specified by positional args, mutating the original.
 
@@ -290,13 +296,21 @@ var builtins = []lisp.LBuiltinDef{
 
 // errCyclicValue reports a value that contains itself.  append! and assoc!
 // mutate a container in place, so a program can put a container inside
-// itself, and elpspath has no answer for one: a path into a cyclic value has
-// no finite result and a copy of one has no finite representation.  The
-// walkers below refuse it with an ordinary error, which the builtins turn
+// itself.  A copy of one has no finite representation, so the write gate and
+// the copy walk refuse it.  A read is different (#960): its path has finitely
+// many steps and it never recurses into what it returns, so it answers on a
+// cyclic value instead.  The walkers below refuse it with an ordinary error,
+// which the builtins turn
 // into a condition handler-bind can catch, rather than recursing until the
 // goroutine stack overflows and the runtime kills the process -- a failure
 // recover() cannot intercept.  See cycle.go and issue #393.
 var errCyclicValue = errors.New("cannot operate on a value that contains itself")
+
+// errNilCell refuses a Go nil *LVal met on a read's path. Only host code can
+// build one; the whole-document gate stopped it before reads were scoped to
+// their path (#960), so the read accessors now refuse it themselves rather
+// than return a value no builtin may return.
+var errNilCell = errors.New("invalid document: nil cell")
 
 // okSimpleContainerTypeGuarded validates container shapes and detects cycles.
 // Non-container values are opaque leaves and impose no type restriction.
@@ -306,10 +320,12 @@ var errCyclicValue = errors.New("cannot operate on a value that contains itself"
 // the bound on every lap and it never fires.  okSimpleType is the entry
 // point that begins a walk.
 //
-// With okSimpleType this is the gate every builtin runs before touching a
-// value, and the rest of the package relies on what it rejects: copyLVal's
-// multi-dimensional array branch cannot construct a copy and says so, and
-// stays unreachable only because this refuses such an array first.  A cycle
+// With okSimpleType this is the gate every write builtin runs before
+// touching a value; ? with a path does not, because such a read only visits
+// its path (#960).
+// The copy walk refuses a multi-dimensional array itself as well, since it
+// cannot construct a copy of one and an embedder can reach it through the
+// Path API without this gate.  A cycle
 // is refused here for the same reason, and the copy walk is guarded too
 // because the exported Path interface lets a Go embedder reach a copy
 // without coming through this gate.
@@ -474,13 +490,30 @@ func okSimpleMapUnordered(in *lisp.LVal, g cycleGuard) error {
 	return err
 }
 
+// ValidateDocument is the whole-document gate the write builtins (?set,
+// ?set!, ?del, ?del!, ?nil, ?nil!) run before they touch a document: it
+// refuses cycles, arrays that are not one-dimensional, and malformed
+// tagged or quote wrappers anywhere in v. A write can copy or rebuild any
+// part of the document, so it needs the whole graph to be sound; a read
+// with a path does not, and ? runs it only when given no path (#960).
+//
+// It is exported so an embedder (luthersystems/substrate's v1 builtins) can
+// gate its own writes directly instead of calling (elpspath:? v) for the
+// side effect. That no-step read still runs this gate, so existing
+// embedders stay safe, but it is the only read that does, and saying what
+// is meant is clearer than relying on it.
+func ValidateDocument(v *lisp.LVal) error { return okSimpleType(v) }
+
 // okSimpleType validates the container graph, accepting arbitrary opaque leaves.
 // It is linear in the DISTINCT containers of a value with nested sharing: past
 // sharedWalkBudget work it skips a container it has already validated (see
 // cycleState.valid), so a document holding a D-level sharing chain costs D,
-// not 2^D, on every elpspath call.
-// Every document builtin retains this guard: copying supports lists, maps,
+// not 2^D, on every elpspath write.
+// Every write builtin retains this guard: copying supports lists, maps,
 // one-dimensional arrays, and tagged/quote wrappers. These walks reject cycles.
+// ? with a path does not run it: such a read visits only its path and never
+// copies, so the whole-document walk would make every read cost O(document)
+// for nothing (#960). ? with no path still runs it (see BuiltinQueryGet).
 // Opaque leaf storage (bytes, native payloads, function bodies/environments)
 // is neither traversed nor copied by elpspath.
 //
@@ -532,6 +565,11 @@ func okSimpleTypeUnordered(in *lisp.LVal) (valid bool) { //nolint:nonamedreturns
 // that overflows the stack is okSimpleType <-> okSimpleContainerType, so a
 // bound either survives the round trip or does nothing.
 func okSimpleTypeGuarded(in *lisp.LVal, g cycleGuard) error {
+	// A host-built Go nil cell is a fault to report, not a panic: the
+	// ordered pass decides the gate's answer, so it must return one.
+	if err := checkCell(in); err != nil {
+		return err
+	}
 	if in.IsNil() {
 		// allow nil as a placeholder for removed elements
 		return nil
