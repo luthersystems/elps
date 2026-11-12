@@ -131,3 +131,5 @@
 # (The five elps#947 Analyze, LintAnalyzers and DurableFunctionName waivers
 # were deleted when token.Location went back to 80 bytes: the tooling record
 # moved off the Location into a carrier only a node with a record has.)
+
+github.com/luthersystems/elps/lisp/lisplib/libstring | Case/uppercase/ascii-mixed-16 | sec/op | 20 | 2027-01-31 | elps#958 | Code layout, not more work: the string-case code is byte-identical (244 instructions) and only moves from 0x287de0 to 0x289050 when lisp/codewalk.go grows; lowercase moves +13.9%, under the gate. Reproduced on one rerun. Delete when the row reports waiver-unused.
