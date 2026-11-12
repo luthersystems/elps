@@ -373,10 +373,16 @@ func okSimpleContainerTypeGuarded(in *lisp.LVal, g cycleGuard) error {
 func containerWidth(in *lisp.LVal) int {
 	switch in.Type {
 	case lisp.LSortMap:
-		return 2 * in.Map().Len()
+		if m, err := mapData(in); err == nil {
+			return 2 * m.Len()
+		}
+		return 0
 	case lisp.LArray:
-		_, data := in.ArrayParts()
-		return len(data.Cells)
+		if checkArray(in) == nil {
+			_, data := in.ArrayParts()
+			return len(data.Cells)
+		}
+		return 0
 	default:
 		return len(in.Cells)
 	}
@@ -394,7 +400,10 @@ func okSimpleContainerContents(in *lisp.LVal, g cycleGuard) error {
 		}
 		return okSimpleTypeGuarded(wrapped, g)
 	case lisp.LSortMap:
-		m0 := in.Map()
+		m0, err := mapData(in)
+		if err != nil {
+			return err
+		}
 		entries := sortedMapEntries(m0)
 		if entries.IsError() {
 			return lisp.GoError(entries)
@@ -411,6 +420,9 @@ func okSimpleContainerContents(in *lisp.LVal, g cycleGuard) error {
 		// Exactly one dimension, matching toCells -- see the reason there.
 		// The gate and the accessor have to agree about what "indexable"
 		// means, or a shape this admits still fails downstream.
+		if err := checkArray(in); err != nil {
+			return err
+		}
 		dims, data := in.ArrayParts()
 		if n := dims.Len(); n != 1 {
 			if n > 1 {
@@ -470,6 +482,11 @@ func okSimpleMapUnordered(in *lisp.LVal, g cycleGuard) error {
 	st := g.state
 	if st.pairs == nil {
 		st.pairs = make([]lisp.MapKeyPair, 0, unorderedPairsCap)
+	}
+	// A map with no map data would panic AppendMapKeyPairs; the ordered
+	// pass reports it (errMalformedMap, #963).
+	if _, err := mapData(in); err != nil {
+		return errOrderedWalk
 	}
 	base := len(st.pairs)
 	var ok bool
@@ -546,8 +563,10 @@ func okSimpleType(in *lisp.LVal) error {
 // whether the unordered walk found in valid.
 //
 // A panic counts as a fault.  Only a value that host code built wrongly can
-// panic the walk, a Go nil cell for one.  The ordered walk can meet another
-// fault before that value and return an error, so the ordered pass decides:
+// panic the walk; the walk checks the ones it knows (a Go nil cell, a
+// malformed array or map header), and the recover is the backstop.  The
+// ordered walk can meet another fault before that value and return an
+// error, so the ordered pass decides:
 // it returns that error, or panics on the value itself.
 func okSimpleTypeUnordered(in *lisp.LVal) (valid bool) { //nolint:nonamedreturns // the deferred recover sets the result in this frame
 	defer func() {
