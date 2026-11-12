@@ -15,7 +15,7 @@ import (
 
 // textDocumentHover handles the textDocument/hover request.
 func (s *Server) textDocumentHover(_ *glsp.Context, params *protocol.HoverParams) (*protocol.Hover, error) {
-	doc := s.docs.Get(params.TextDocument.URI)
+	doc := s.requestDoc(params.TextDocument.URI)
 	if doc == nil {
 		return nil, nil
 	}

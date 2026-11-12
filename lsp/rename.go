@@ -15,7 +15,7 @@ import (
 // textDocumentPrepareRename validates that the symbol under the cursor
 // is renameable and returns its range.
 func (s *Server) textDocumentPrepareRename(_ *glsp.Context, params *protocol.PrepareRenameParams) (any, error) {
-	doc := s.docs.Get(params.TextDocument.URI)
+	doc := s.requestDoc(params.TextDocument.URI)
 	if doc == nil {
 		return nil, nil // no document — rename not applicable
 	}
@@ -63,7 +63,7 @@ func (s *Server) textDocumentPrepareRename(_ *glsp.Context, params *protocol.Pre
 
 // textDocumentRename handles the textDocument/rename request.
 func (s *Server) textDocumentRename(_ *glsp.Context, params *protocol.RenameParams) (*protocol.WorkspaceEdit, error) {
-	doc := s.docs.Get(params.TextDocument.URI)
+	doc := s.requestDoc(params.TextDocument.URI)
 	if doc == nil {
 		return nil, errors.New("document not found")
 	}

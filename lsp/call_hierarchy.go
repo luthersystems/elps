@@ -20,7 +20,7 @@ type callHierarchyData struct {
 
 // textDocumentPrepareCallHierarchy handles the textDocument/prepareCallHierarchy request.
 func (s *Server) textDocumentPrepareCallHierarchy(_ *glsp.Context, params *protocol.CallHierarchyPrepareParams) ([]protocol.CallHierarchyItem, error) {
-	doc := s.docs.Get(params.TextDocument.URI)
+	doc := s.requestDoc(params.TextDocument.URI)
 	if doc == nil {
 		return nil, nil
 	}
@@ -54,7 +54,7 @@ func (s *Server) callHierarchyIncomingCalls(_ *glsp.Context, params *protocol.Ca
 		return nil, nil
 	}
 
-	doc := s.docs.Get(data.URI)
+	doc := s.requestDoc(data.URI)
 	if doc == nil {
 		return nil, nil
 	}
@@ -150,7 +150,7 @@ func (s *Server) callHierarchyOutgoingCalls(_ *glsp.Context, params *protocol.Ca
 		return nil, nil
 	}
 
-	doc := s.docs.Get(data.URI)
+	doc := s.requestDoc(data.URI)
 	if doc == nil {
 		return nil, nil
 	}
