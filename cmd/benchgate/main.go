@@ -95,7 +95,9 @@ how both consuming repositories declare their policy):
                       names carry no suffix, so a trailing -N is the
                       benchmark's own and is kept. N>1: exactly -N is
                       stripped. 0 (default): any trailing -<digits> is
-                      stripped, as before #767.
+                      stripped, as before #767; a waiver file's
+                      "@gomaxprocs N" line then sets the rule its waivers
+                      are checked against (rows still strip as before).
   -waivers PATH       reviewed waiver list (env BENCH_WAIVERS; empty = none).
                       Named explicitly, so a path that is not there is an
                       error rather than "no waivers configured".
