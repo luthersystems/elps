@@ -53,19 +53,21 @@ def validate_tag_on_main(jobs):
 
 
 def validate_publish_identity(jobs):
-    # The publish jobs sign in to Entra with OIDC (the app vsce-publish,
-    # common-infrastructure azure-vsce/), which trusts only the environment
-    # vscode-marketplace. No job reads a stored Marketplace secret.
+    # The publish jobs use Marketplace Trusted Publishing (`vsce publish
+    # --oidc`): the publisher's policy trusts only this repo, this workflow and
+    # the environment vscode-marketplace. No job reads a stored Marketplace
+    # secret, and no other sign-in step runs.
     for name in ("publish-platform", "publish-universal"):
         job = jobs[name]
         assert job["environment"] == "vscode-marketplace"
         assert job["permissions"] == {"contents": "read", "id-token": "write"}
         assert "secrets." not in yaml.safe_dump(job)
         steps = job["steps"]
-        logins = [i for i, st in enumerate(steps) if st.get("uses", "").startswith("azure/login@")]
-        publish = [i for i, st in enumerate(steps) if "vsce publish" in st.get("run", "")]
-        assert len(logins) == 1 and len(publish) == 1 and logins[0] < publish[0]
-        assert "--azure-credential" in steps[publish[0]]["run"]
+        assert not any(st.get("uses", "").startswith("azure/login@") for st in steps)
+        publish = [st["run"] for st in steps if "vsce publish" in st.get("run", "")]
+        assert len(publish) == 1
+        assert publish[0].split()[-1] == "--oidc"
+        assert " -p " not in publish[0] and "--pat" not in publish[0]
     for name in ("tag-on-main", "build-binaries", "diagnose-marketplace"):
         assert "id-token" not in yaml.safe_dump(jobs[name].get("permissions", {}))
         assert "environment" not in jobs[name]
@@ -132,6 +134,16 @@ class PublicationIsolation(unittest.TestCase):
                 with self.subTest(publish_identity=name, field=field):
                     changed = copy.deepcopy(doc)
                     changed["jobs"][name][field] = value
+                    with self.assertRaises(AssertionError):
+                        validate(changed)
+        # The publish step must keep --oidc and not fall back to a PAT.
+        for name in ("publish-platform", "publish-universal"):
+            for old, new in (("--oidc", ""), ("--oidc", '-p "$VSCE_PAT"')):
+                with self.subTest(publish_flag=name, replacement=new):
+                    changed = copy.deepcopy(doc)
+                    for st in changed["jobs"][name]["steps"]:
+                        if "vsce publish" in st.get("run", ""):
+                            st["run"] = st["run"].replace(old, new).strip()
                     with self.assertRaises(AssertionError):
                         validate(changed)
         changed = copy.deepcopy(doc)
