@@ -56,6 +56,12 @@ srv := lsp.New(
 srv.RunStdio()  // or srv.RunTCP("localhost:7998")
 ```
 
+Prefer `WithEnv`. Only an environment lets the server expand the macros of
+the workspace (see "Architecture" below): with `WithRegistry` alone, a
+function that a workspace macro defines is reported as an undefined symbol.
+Plain `elps lsp`, with neither option, builds a standard library
+environment for this.
+
 When `WithEnv` or `WithRegistry` is provided, the LSP server:
 - Resolves symbols from your custom packages in hover and completion
 - Includes your package exports in package-qualified completions
@@ -126,6 +132,13 @@ Find all locations where a symbol is used. Optionally includes the declaration
 site. Works within the current file; cross-file references require workspace
 scanning.
 
+References, hover, definition, rename and call hierarchy also work from a
+workspace file the editor has not opened: the server reads it from disk.
+A reference view runs these on results in other files, and a command-line
+client or agent sends them without opening anything. The server reads only
+`.lisp` files under the workspace root, within the per-file size limit of
+the workspace scan.
+
 ### Completion
 
 Two completion modes:
@@ -169,7 +182,8 @@ The server performs workspace scanning in the background on initialization.
 Each document change triggers re-parsing and re-analysis with the workspace
 index providing cross-file context.
 
-When the embedder gives the server an environment (`lsp.WithEnv`), the
+When the server has an environment (`lsp.WithEnv`, which plain
+`elps lsp` and `cmd.LSPCommand` without options pass for you), the
 index build loads the macros of the workspace into it, and the analysis
 expands calls of those macros. A save keeps the loaded macros in step
 with the file. If the save changed the file's `in-package`, `use-package`,
@@ -252,9 +266,7 @@ they land correctly either way.)
 - **UTF-16 columns are only partly implemented**: see
   [Position Encoding](#position-encoding) for exactly which responses are
   converted and which still carry byte columns.
-- **Single-file analysis**: Rename and references operate within the current
-  file. Cross-file rename is not yet supported.
-- **No formatting on save**: Use `elps fmt` separately or configure your editor
-  to run it as a formatter.
-- **No semantic tokens**: Syntax highlighting must be provided by a TextMate
-  grammar or tree-sitter parser, not the LSP server.
+- **Macro-defined functions in other files**: a function that a call of a
+  workspace macro defines resolves in the file of the call, but another file
+  that uses it reports it as an undefined symbol. The workspace index does
+  not expand macro calls (luthersystems/elps#953).

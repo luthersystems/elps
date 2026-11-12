@@ -12,6 +12,7 @@ package lint
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -21,6 +22,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/luthersystems/elps/analysis"
 	"github.com/luthersystems/elps/astutil"
@@ -370,6 +372,19 @@ type LintConfig struct {
 	//
 	// If MacroExpander is also set, it takes precedence over Env.
 	Env *lisp.LEnv
+
+	// MacroLoadTimeout, when positive, bounds the load of the workspace
+	// macros into Env as the editor bounds it
+	// (analysis.LoadWorkspaceMacrosContext): each preamble form has a
+	// budget of analysis.PreambleFormMaxSteps steps, and no form starts
+	// after the timeout. Zero loads without a bound.
+	//
+	// The load evaluates the in-package, use-package, export, defmacro,
+	// defun and set forms of every workspace file, so a set whose value
+	// never finishes stops an unbounded lint run. The elps lint command
+	// sets a bound: it evaluated no code before it loaded macros, and a
+	// lint run in CI must end.
+	MacroLoadTimeout time.Duration
 }
 
 // LintFiles analyzes source files with full workspace + embedder context.
@@ -475,13 +490,24 @@ func BuildAnalysisConfig(cfg *LintConfig) (*analysis.Config, error) {
 	// otherwise, if Env is provided, load workspace macros and create one.
 	expander := cfg.MacroExpander
 	if expander == nil && cfg.Env != nil {
-		// Unbounded, unlike the editor loads (LoadWorkspaceMacrosContext):
-		// elps lint is a one-shot process that evaluates the preamble as
-		// the program would, and the user can stop it.
-		if errs := analysis.LoadWorkspaceMacros(cfg.Env, prescan.Preamble); len(errs) > 0 {
-			for _, err := range errs {
-				slog.Warn("failed to load workspace macro", "error", err)
+		// Unbounded unless MacroLoadTimeout is set: an embedder's lint is a
+		// one-shot process that evaluates the preamble as the program
+		// would, and the user can stop it.
+		var errs []error
+		if cfg.MacroLoadTimeout > 0 {
+			ctx, cancel := context.WithTimeout(context.Background(), cfg.MacroLoadTimeout)
+			load := analysis.LoadWorkspaceMacrosContext(ctx, cfg.Env, prescan.Preamble)
+			cancel()
+			errs = load.Errors
+			if load.Unfinished < len(prescan.Preamble) {
+				slog.Warn("workspace macro load stopped at its deadline; later forms did not load",
+					"timeout", cfg.MacroLoadTimeout)
 			}
+		} else {
+			errs = analysis.LoadWorkspaceMacros(cfg.Env, prescan.Preamble)
+		}
+		for _, err := range errs {
+			slog.Warn("failed to load workspace macro", "error", err)
 		}
 		expander = &analysis.EnvMacroExpander{Env: cfg.Env}
 	}

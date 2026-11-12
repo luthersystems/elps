@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/luthersystems/elps/analysis"
 	"github.com/luthersystems/elps/lint"
 	"github.com/spf13/cobra"
 )
@@ -108,11 +109,26 @@ Examples:
 			// Build LintConfig from CLI flags
 			var lintCfg *lint.LintConfig
 			if workspace != "" && !noWorkspace {
+				// The env the workspace macros load into, so the analysis
+				// expands a call of a workspace macro and sees the
+				// definitions it makes (see cmdConfig.analysisEnv). Before,
+				// the command never set LintConfig.Env, so no workspace
+				// macro was expanded, even for an embedder that passed its
+				// env (the lint twin of luthersystems/elps#952).
+				setup, envErr := cfg.analysisEnv()
+				if envErr != nil {
+					fmt.Fprintf(os.Stderr, "elps lint: env bootstrap error: %v\n", envErr)
+					os.Exit(2)
+				}
 				lintCfg = &lint.LintConfig{
 					Workspace:   workspace,
 					Excludes:    excludes,
 					IncludeDirs: includeDirs,
-					Registry:    cfg.resolveRegistry(),
+					Registry:    setup.registry,
+					Env:         setup.env,
+					// The load evaluates workspace code, which a lint run
+					// in CI must not wait on forever.
+					MacroLoadTimeout: analysis.PreambleLoadTimeout,
 				}
 			}
 

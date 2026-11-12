@@ -12,7 +12,7 @@ import (
 
 // textDocumentDefinition handles the textDocument/definition request.
 func (s *Server) textDocumentDefinition(_ *glsp.Context, params *protocol.DefinitionParams) (any, error) {
-	doc := s.docs.Get(params.TextDocument.URI)
+	doc := s.requestDoc(params.TextDocument.URI)
 	if doc == nil {
 		return nil, nil
 	}

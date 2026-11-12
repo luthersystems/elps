@@ -172,7 +172,10 @@ func (s *Server) analyzeAndPublish(doc *Document) {
 	currentVersion := doc.Version
 	doc.mu.Unlock()
 
-	var diags []protocol.Diagnostic
+	// Diagnostics must be an array, never null: LSP gives null no meaning
+	// here, and a client that reads it as "no change" keeps the stale
+	// diagnostics of a file whose last problem was just fixed.
+	diags := []protocol.Diagnostic{}
 
 	if overLimit {
 		// Stored without being parsed (see Document.parse): report that

@@ -11,7 +11,7 @@ import (
 
 // textDocumentReferences handles the textDocument/references request.
 func (s *Server) textDocumentReferences(_ *glsp.Context, params *protocol.ReferenceParams) ([]protocol.Location, error) {
-	doc := s.docs.Get(params.TextDocument.URI)
+	doc := s.requestDoc(params.TextDocument.URI)
 	if doc == nil {
 		return nil, nil
 	}

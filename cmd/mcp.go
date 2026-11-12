@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/luthersystems/elps/lisp/lisplib"
 	"github.com/luthersystems/elps/mcpserver"
 	"github.com/spf13/cobra"
 )
@@ -17,10 +16,6 @@ func MCPCommand(opts ...Option) *cobra.Command {
 		opt(&cfg)
 	}
 
-	newDocEnv := cfg.newDocEnv
-	if newDocEnv == nil {
-		newDocEnv = lisplib.NewDocEnv
-	}
 	runStdio := cfg.runStdio
 	if runStdio == nil {
 		runStdio = func(ctx context.Context, srv *mcpserver.Server) error {
@@ -37,18 +32,15 @@ This server is intended for agent/tooling clients over stdio. It does not replac
 the ELPS LSP server or the existing ELPS CLI commands.`,
 		Args: cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
-			var serverOpts []mcpserver.Option
-			if cfg.env != nil {
-				serverOpts = append(serverOpts, mcpserver.WithEnv(cfg.env))
+			// An env, not only its registry, so the server expands
+			// workspace macros (see cmdConfig.analysisEnv).
+			setup, err := cfg.analysisEnv()
+			if err != nil {
+				return fmt.Errorf("mcp server bootstrap error: %w", err)
 			}
-			if reg := cfg.resolveRegistry(); reg != nil {
-				serverOpts = append(serverOpts, mcpserver.WithRegistry(reg))
-			} else {
-				env, err := newDocEnv()
-				if err != nil {
-					return fmt.Errorf("mcp server bootstrap error: %w", err)
-				}
-				serverOpts = append(serverOpts, mcpserver.WithRegistry(env.Runtime.Registry))
+			serverOpts := []mcpserver.Option{mcpserver.WithRegistry(setup.registry)}
+			if setup.env != nil {
+				serverOpts = append(serverOpts, mcpserver.WithEnv(setup.env))
 			}
 			srv := mcpserver.New(serverOpts...)
 			if err := runStdio(context.Background(), srv); err != nil {
