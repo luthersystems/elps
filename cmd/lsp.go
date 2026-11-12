@@ -6,14 +6,15 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/luthersystems/elps/lisp/lisplib"
 	"github.com/luthersystems/elps/lsp"
 	"github.com/spf13/cobra"
 )
 
 // LSPCommand creates the "lsp" cobra command with optional embedder
 // configuration. Embedders can pass WithRegistry or WithEnv to inject
-// Go-registered symbols for semantic analysis.
+// Go-registered symbols for semantic analysis. Only an env lets the
+// server expand workspace macros; without either option the command
+// builds a stdlib env for that (see cmdConfig.analysisEnv).
 func LSPCommand(opts ...Option) *cobra.Command {
 	var cfg cmdConfig
 	for _, o := range opts {
@@ -24,11 +25,6 @@ func LSPCommand(opts ...Option) *cobra.Command {
 		stdio bool
 		port  int
 	)
-
-	newDocEnv := cfg.newDocEnv
-	if newDocEnv == nil {
-		newDocEnv = lisplib.NewDocEnv
-	}
 
 	cmd := &cobra.Command{
 		Use:   "lsp [flags]",
@@ -53,20 +49,14 @@ Editor configuration (VS Code):
   "elps lsp --stdio" for .lisp files.`,
 		Args: cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
-			var serverOpts []lsp.Option
-			if cfg.env != nil {
-				serverOpts = append(serverOpts, lsp.WithEnv(cfg.env))
+			setup, err := cfg.analysisEnv()
+			if err != nil {
+				return fmt.Errorf("lsp server bootstrap error: %w", err)
 			}
-			if reg := cfg.resolveRegistry(); reg != nil {
-				serverOpts = append(serverOpts, lsp.WithRegistry(reg))
-			} else {
-				env, err := newDocEnv()
-				if err != nil {
-					return fmt.Errorf("lsp server bootstrap error: %w", err)
-				}
-				serverOpts = append(serverOpts, lsp.WithRegistry(env.Runtime.Registry))
+			serverOpts := []lsp.Option{lsp.WithRegistry(setup.registry)}
+			if setup.env != nil {
+				serverOpts = append(serverOpts, lsp.WithEnv(setup.env))
 			}
-
 			srv := lsp.New(serverOpts...)
 
 			if !stdio && port > 0 {
