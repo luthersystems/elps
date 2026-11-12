@@ -621,6 +621,19 @@ func (w *CodeWalker) compound(v *LVal, depth int) *LVal {
 					// The lowering reads the arguments and does not keep
 					// the slice, so it may share v's cells.
 					exp = lower(SExpr(v.Cells[1:]))
+					if exp.IsError() {
+						if !w.KeepGoing {
+							return w.fail(exp)
+						}
+						// A malformed form stays the special operator,
+						// as it is without Lower.
+						break
+					}
+					// Like a Go macro's, the expansion is fresh nodes
+					// and the arguments: locate the fresh nodes at the
+					// form, so an error in the lowered code points at
+					// the get-default call, not at an argument.
+					locateExpansionTree(exp, v.loc(), v.Cells[1:])
 					op, isOp = "", false
 				} else {
 					if w.Expand1 == nil {

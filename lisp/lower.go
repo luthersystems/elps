@@ -2,6 +2,8 @@
 
 package lisp
 
+import "strings"
+
 // specialOpLowerings maps a special operator of package lisp to its
 // lowering: the same form written in other forms, as the macro that the
 // operator replaced expanded it.
@@ -51,7 +53,8 @@ func lowerGetDefault(args *LVal) *LVal {
 }
 
 // HasLowering reports whether the special operator of package lisp named
-// name has a lowering.
+// name has a lowering.  name may carry the lisp: prefix, as a form's head
+// may.
 func HasLowering(name string) bool {
-	return specialOpLowerings[name] != nil
+	return specialOpLowerings[strings.TrimPrefix(name, DefaultLangPackage+":")] != nil
 }

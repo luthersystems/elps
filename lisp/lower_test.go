@@ -42,15 +42,44 @@ func TestMacroExpandAllLower(t *testing.T) {
 	elpstest.RunTestSuite(t, tests)
 }
 
-// Each lowering names a special operator of package lisp.
-func TestLoweringsNameSpecialOps(t *testing.T) {
-	ops := map[string]bool{}
-	for _, op := range lisp.DefaultSpecialOps() {
-		ops[op.Name()] = true
-	}
+// HasLowering takes the name with or without the lisp: prefix.
+func TestHasLowering(t *testing.T) {
 	require.True(t, lisp.HasLowering("get-default"))
+	require.True(t, lisp.HasLowering("lisp:get-default"))
 	require.False(t, lisp.HasLowering("if"))
-	for _, name := range []string{"get-default"} {
-		require.True(t, ops[name], "%s has a lowering but is not a special operator", name)
+	require.False(t, lisp.HasLowering("other:get-default"))
+}
+
+// An error in lowered code points at the get-default call, as the old
+// macro's expansion did, and not at an argument or an unknown position.
+func TestLoweredErrorLocation(t *testing.T) {
+	env := newGenSymsEnv(t)
+	got := env.LoadString("t.lisp", "(set 'x 5)\n(eval (macroexpand-all '(get-default x \"k\" 0) :lower true))")
+	require.Equal(t, lisp.LError, got.Type)
+	// Column 24 is the get-default form inside the quote.
+	src, ok := got.Source()
+	require.True(t, ok)
+	require.Equal(t, "t.lisp:2:24", src.String())
+	for _, f := range got.CallStack().Frames {
+		require.NotNil(t, f.Source, "frame %s has no location", f.Name)
+	}
+}
+
+// With KeepGoing, a get-default the lowering refuses (wrong argument count)
+// stays the special operator, as it is without Lower, and is not walked as
+// a call to a function named get-default.
+func TestLowerKeepGoingKeepsMalformedOperator(t *testing.T) {
+	form := lisp.SExpr([]*lisp.LVal{lisp.Symbol("get-default"), lisp.Symbol("m"), lisp.String("k")})
+	for _, lower := range []bool{false, true} {
+		var ops []string
+		w := &lisp.CodeWalker{KeepGoing: true, Lower: lower, Visit: func(n *lisp.WalkNode) bool {
+			if n.Event == lisp.WalkForm && n.Node == form {
+				ops = append(ops, n.Op)
+			}
+			return true
+		}}
+		out := w.Walk(form)
+		require.False(t, out.IsError(), "lower=%v: %v", lower, out)
+		require.Equal(t, []string{"get-default"}, ops, "lower=%v", lower)
 	}
 }

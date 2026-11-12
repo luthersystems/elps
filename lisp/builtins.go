@@ -143,9 +143,10 @@ var (
 			written with their bodies expanded. The input is not modified.
 			Nesting deeper than the evaluator's nesting limit, or a head that
 			keeps expanding past the macro expansion limit, is an error.
-			With :lower true, a special operator that replaced a macro, such
-			as get-default, is expanded as that macro expanded it, for tools
-			that model the macro's expansion and not the operator.`},
+			With :lower true, get-default (today the only special operator
+			with a lowering) is expanded as the macro it replaced expanded
+			it, for tools that model the macro's expansion and not the
+			operator.`},
 		{"builtin", Formals("name"), builtinRegisteredBuiltin,
 			`Returns the builtin registered as name, a quoted qualified symbol
 			such as 'math:floor, whatever that name is bound to now.

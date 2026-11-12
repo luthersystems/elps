@@ -120,10 +120,15 @@ func TestGetDefaultMatchesMacroExpansion(t *testing.T) {
 					env.LoadString("log.lisp", `log`).String(), fn.FID(),
 				}
 			}
+			call := `(get-default ` + args[0] + ` ` + args[1] + ` ` + args[2] + `)`
 			want := run(getDefaultExpansion(args[0], args[1], args[2]))
-			got := run(`(get-default ` + args[0] + ` ` + args[1] + ` ` + args[2] + `)`)
+			got := run(call)
+			// The lowering (macroexpand-all :lower true) must evaluate as
+			// the macro's expansion did, so it is the third column.
+			low := run(`(eval (macroexpand-all '` + call + ` :lower true))`)
 			for i, what := range []string{"result", "error text", "side effects", "name of the next lambda"} {
 				assert.Equal(t, want[i], got[i], what)
+				assert.Equal(t, want[i], low[i], "lowered: "+what)
 			}
 		})
 	}

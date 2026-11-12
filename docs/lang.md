@@ -594,8 +594,9 @@ code:
 - `defun` and `defmacro` are kept as written with their bodies expanded;
   their own expansion embeds a compiled function rather than source.
 
-`(macroexpand-all form :lower true)` also expands each special operator that
-replaced a macro, such as `get-default`, as that macro expanded it. A tool
+`(macroexpand-all form :lower true)` also expands `get-default` as the macro
+it replaced expanded it. Today `get-default` is the only special operator with
+such a lowering; other operators, such as `when`, stay as they are. A tool
 that compiles ELPS code and models the macro's expansion (a `let` and an
 `if`), and not the newer operator, asks for this form. The lowered code
 evaluates to the same value. Quoted data and local shadowing work as above.
