@@ -35,4 +35,4 @@ jobs:
     # Pinned to the commit of v1.3.0, as this repo pins every action
     # (scripts/ci-gates-test.sh); Dependabot moves it. The actions the called
     # workflow uses still follow luthersystems/.github's v1 tag.
-    uses: luthersystems/.github/.github/workflows/security.yml@444a3bb9b287c80a9fe2d93d0dc7abfb390330c2 # v1.8.2
+    uses: luthersystems/.github/.github/workflows/security.yml@870afa409a35ed174b67d86c5ac4ed6da848cad8 # v1.9.1
