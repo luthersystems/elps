@@ -205,6 +205,12 @@ func opResult(env *lisp.LEnv, op *copyOp, data *lisp.LVal, err error) *lisp.LVal
 // the path counts its work.  A nil op, or a Path from outside this package,
 // runs the exported method unchanged.
 func getPath(p Path, in *lisp.LVal, op *copyOp) (*lisp.LVal, error) {
+	if op != nil && op.nilSafe && op.iterDepth == 0 && in != nil && in.IsNil() {
+		// A step into nil.  Every step reads its input, so each one would
+		// fail with "first argument is nil"; ?? returns nil instead.  A
+		// chain checks again before each of its steps.
+		return lisp.Nil(), nil
+	}
 	switch p := p.(type) {
 	case *rootPath:
 		return getPath(p.path, in, op)

@@ -23,7 +23,8 @@ step, no string DSL. Path step types:
   symbol    iterate all     '*
   list      array slice     '(range 1 3), '(range 1)
 
-? reads without copying. ?set, ?del and ?nil copy the document's maps,
+? reads without copying. ?? reads as ? does, but returns nil when a
+step meets nil. ?set, ?del and ?nil copy the document's maps,
 lists and vectors; their "!" forms mutate in place. In-place edits of
 list elements are refused; use a copying form or a vector instead.
 An out-of-range integer index leaves the document unchanged on a write
@@ -128,6 +129,22 @@ var builtins = []lisp.LBuiltinDef{
 		(? obj)                   => obj itself (no path steps)
 
 		Accepts at most 1024 nested iterator steps; deeper traversal raises a depth error.`)),
+	lisp.DropsArgList(libutil.FunctionDoc("??", lisp.Formals("val", lisp.VarArgSymbol, "steps"), BuiltinQueryGetNilSafe,
+		`Get value at a path, returning nil when a step meets nil.
+
+		The same as ?, except that a step into nil returns nil instead of
+		raising an error. So a missing key, an out-of-range index or a
+		stored () anywhere on the path gives nil. A step into a leaf of
+		the wrong type, such as a number or a string, still raises an
+		error, because that is a fault in the data or the path.
+
+		(?? obj "foo" 0 "bar")    => nil when obj has no "foo"
+		(? obj "foo" 0 "bar")     => error: first argument is nil
+		(?? obj "foo" 0)          => error when obj's "foo" is a number
+		(?? obj)                  => obj itself (no path steps)
+
+		After a '* step, ? already gives nil for each element whose
+		path fails, so ?? reads the same as ? from there.`)),
 	lisp.DropsArgList(libutil.FunctionDoc("parse-path", lisp.Formals("selector"), BuiltinParsePath,
 		`Convert a jq-style path string into a list of positional path steps.
 

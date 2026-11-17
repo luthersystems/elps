@@ -22,7 +22,7 @@ ELPS (Ellipse) is a Lisp-1 dialect designed to be embedded within Go application
 - **Built for embedding.** A small Go API creates environments, loads code, and exposes Go functions and packages to Lisp ([Embedding Guide](docs/embed.md)).
 - **Bounded execution.** Context cancellation, step limits, stack-height, nesting and tail-iteration limits, and allocation size caps let a host stop runaway programs ([Execution Limits](docs/lang.md#execution-limits)).
 - **Fast per-request VMs.** Load a program once, publish an immutable template, and instantiate independent VMs from it ([VM Templates](docs/templates.md)).
-- **Condition-based errors.** Typed errors carry stack traces and can be handled in Lisp (`handler-bind`, `ignore-errors`, `with-cleanup`) or returned to Go.
+- **Condition-based errors.** Typed errors carry stack traces and can be handled in Lisp (`handler-bind`, `ignore-errors`, `try`, `with-cleanup`) or returned to Go.
 - **Standard library.** Packages for JSON, regular expressions, time, math, strings, base64, schema validation, testing and more.
 - **Tooling included.** REPL, language server, DAP debugger, linter, formatter, minifier and MCP server in one binary.
 

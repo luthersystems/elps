@@ -241,7 +241,7 @@ them with `env.Errorf(...)`). Check `v.Type == lisp.LError` (or use
 - **Packages**: `in-package`, `use-package`, `export`. Qualified symbols use
   `:` (`lisp:set`); keywords start with `:`.
 - **No backtick reader syntax**: write `(quasiquote ...)` / `(unquote ...)`.
-- **Error handling**: `handler-bind` and `ignore-errors` catch; `with-cleanup`
+- **Error handling**: `handler-bind`, `ignore-errors` and `try` catch; `with-cleanup`
   is `finally`, not `catch` (cleanup-form list first, then body), and never
   masks an `internal-panic`.
 - **Tail recursion**: optimized via stack frame analysis.

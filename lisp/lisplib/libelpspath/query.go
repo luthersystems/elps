@@ -219,8 +219,8 @@ func parseSExprStep(expr *lisp.LVal) (Path, error) {
 
 // requireFirstArg rejects a call carrying no arguments at all.
 //
-// The noun names what the missing argument IS, because the eight builtins do
-// not agree about that: seven take a document first, and parse-path takes a
+// The noun names what the missing argument IS, because the nine builtins do
+// not agree about that: eight take a document first, and parse-path takes a
 // selector string and no document at all. Reporting "parse-path requires a
 // document argument" describes a signature that function does not have.
 //
@@ -236,7 +236,7 @@ func parseSExprStep(expr *lisp.LVal) (Path, error) {
 //
 //	runtime error: index out of range [0] with length 0
 //
-// All eight did. That is the same shape as the zero-dimensional array crash
+// All eight that existed then did. That is the same shape as the zero-dimensional array crash
 // this package fixed alongside it: an exported entry point trusting a
 // precondition only its caller can establish. ?set and ?set! already checked
 // the OTHER end of the argument list for exactly this reason -- the trailing
@@ -297,6 +297,38 @@ func BuiltinQueryGet(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	// An iterator's work is counted and paid for (budget.go).
 	op := newQueryOp(env)
 	op.checkReadCells = true
+	data, err := getPath(path, val, op)
+	return opResult(env, op, data, err)
+}
+
+// BuiltinQueryGetNilSafe implements (elpspath:?? val &rest steps), the
+// nil-safe read of luthersystems/elps#974.
+//
+// ? returns nil for a missing key or an out-of-range index, but a later
+// step into that nil raises "first argument is nil".  A deep read of
+// optional data then needs ignore-errors, which also hides a wrong type in
+// the data or the path.  ?? stops at nil instead and returns nil.  A step
+// into a leaf of the wrong type still raises the error of ?.
+//
+// It is ? with one flag on the operation (copyOp.nilSafe), so it walks the
+// path once, counts iterator work as ? does, and words its errors as ? does.
+func BuiltinQueryGetNilSafe(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+	if lerr := requireFirstArg(env, "??", "document", args); lerr != nil {
+		return lerr
+	}
+	val := args.Cells[0]
+	steps := args.Cells[1:]
+	if len(steps) == 0 {
+		// No steps: the whole-document gate of (elpspath:? v) applies.
+		return BuiltinQueryGet(env, args)
+	}
+	path, err := ArgsToPath(steps)
+	if err != nil {
+		return env.Error(err)
+	}
+	op := newQueryOp(env)
+	op.checkReadCells = true
+	op.nilSafe = true
 	data, err := getPath(path, val, op)
 	return opResult(env, op, data, err)
 }

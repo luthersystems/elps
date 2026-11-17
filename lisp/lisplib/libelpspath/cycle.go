@@ -182,6 +182,12 @@ type copyOp struct {
 	// holding one. The exported Path API leaves it off so a range Get stays
 	// O(1) aliasing.
 	checkReadCells bool
+	// nilSafe makes getPath return nil for a step into nil, outside any
+	// iterator (elpspath:??, luthersystems/elps#974).  Under an iterator it
+	// does nothing: the iterator already gives nil for an element whose
+	// path fails, and a nested iterator must tell a failed element from an
+	// empty result (#961), which an early nil would hide.
+	nilSafe bool
 }
 
 // newCopyOp returns the copy state for one operation bounded by limit.

@@ -219,7 +219,7 @@ var specials = []string{
 	"defun", "defmacro", "lambda", "let", "let*", "labels", "flet",
 	"quasiquote", "unquote", "unquote-splicing", "quote", "if", "cond",
 	"handler-bind", "in-package", "use-package", "export", "set", "set!",
-	"progn", "and", "or", "not", "error", "ignore-errors",
+	"progn", "and", "or", "not", "error", "ignore-errors", "try",
 	"with-cleanup",
 }
 

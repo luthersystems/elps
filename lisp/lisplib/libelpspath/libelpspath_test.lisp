@@ -399,3 +399,34 @@
   ; ".a?" is exactly ".a": nothing in the engine suppresses errors per step
   (assert-equal (elpspath:parse-path ".a") (elpspath:parse-path ".a?"))
   (assert-equal '("a" 0) (elpspath:parse-path ".a[0]?")))
+
+;;; ---- ?? nil-safe read (luthersystems/elps#974) ----
+
+; ? returns nil for a missing key, but a later step into that nil is an
+; error. ?? returns nil there. A wrong type is still an error.
+(test-let "?? returns nil when a step meets nil"
+  ((val (sorted-map "api" (vector (sorted-map "target" "x.example.com" "z" ()) ()))))
+  (assert-string= "x.example.com" (elpspath:?? val "api" 0 "target"))
+  (assert-nil (elpspath:?? val "nope" 0 "target"))
+  (assert-nil (elpspath:?? val "api" 9 "target"))
+  (assert-nil (elpspath:?? val "api" 1 "target"))
+  (assert-nil (elpspath:?? val "api" 0 "z" "x"))
+  (assert-nil (elpspath:?? () "a" 0))
+  (assert-nil (ignore-errors (elpspath:? val "nope" 0 "target") 'not-reached)))
+
+(test-let "?? raises an error for a wrong type"
+  ((val (sorted-map "n" 1 "s" "leaf")))
+  (assert-nil (ignore-errors (elpspath:?? val "n" 0) 'not-reached))
+  (assert-nil (ignore-errors (elpspath:?? val "s" "x") 'not-reached))
+  (assert-nil (ignore-errors (elpspath:?? () "a" 1.5) 'not-reached)))
+
+(test-let "?? is ? after an iterator step"
+  ((val (vector (sorted-map "a" 1) (sorted-map "b" 2))))
+  (assert-equal (elpspath:? val '* "a") (elpspath:?? val '* "a"))
+  (assert-equal val (elpspath:?? val)))
+
+(test "?? composes with or and try"
+  (assert-string= "default"
+                  (or (elpspath:?? (sorted-map) "a" 0) "default"))
+  (assert-string= "default"
+                  (try (elpspath:?? (sorted-map "a" 1) "a" 0) "default")))

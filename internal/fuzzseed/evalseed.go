@@ -156,6 +156,8 @@ func EvalTerminating() map[string]string {
 		"string-ops":          `(string:join (map 'list to-string (make-sequence 0 10)) ",")`,
 		"handler-bind":        `(handler-bind ([condition (lambda (c &rest args) 'caught)]) (error 'boom "x"))`,
 		"ignore-errors":       `(ignore-errors (error 'boom "x"))`,
+		"try-fallback":        `(try (error 'boom "x") (error 'boom "y") 'fallback)`,
+		"try-nil-success":     `(try () 'not-reached)`,
 		// with-cleanup runs cleanup on both exit paths.  The erroring shapes
 		// are wrapped so they belong here rather than in EvalErroring: what
 		// is under test is that the operator TERMINATES with the cleanup

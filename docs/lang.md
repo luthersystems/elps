@@ -1571,6 +1571,18 @@ document.
 (elpspath:? order "lines" 5)           ; evaluates to ()
 ```
 
+A later step into that `()` raises an error with `?`. `??` is the nil-safe
+read: it is `?`, but a step into `()` returns `()`. A step into a leaf of the
+wrong type still raises an error, so `??` does not hide a fault in the data
+or the path.
+
+```lisp
+(elpspath:? order "missing" 0)         ; error: first argument is nil
+(elpspath:?? order "missing" 0)        ; evaluates to ()
+(elpspath:?? order "id" 0)             ; error: cannot index into int at path id
+(or (elpspath:?? order "missing" 0) "default")  ; evaluates to "default"
+```
+
 Keywords, other symbols, bytes, functions and native values are opaque
 leaves. Reading a leaf or an unrelated field succeeds regardless of the
 leaf's type. A further step into a leaf raises an error naming its type and
@@ -3128,7 +3140,7 @@ Frames removed by tail-call optimization are not in the list. Like
 
 ### Guaranteed Cleanup (`with-cleanup`)
 
-`handler-bind`, `rethrow` and `ignore-errors` all *catch*.  None of them can
+`handler-bind`, `rethrow`, `ignore-errors` and `try` all *catch*.  None of them can
 promise that a form runs on the way out.  `with-cleanup` is that promise:
 
 ```lisp
@@ -3239,6 +3251,42 @@ It is worth saying again, and louder, that **the use of ignore-errors is
 greatly discouraged in general**.  If you must attempt to handle errors in lisp
 code try to use handler-bind.
 
+### Fallbacks (`try`)
+
+`try` evaluates its forms in order and returns the value of the first form
+that does not signal. The last form is not guarded, so its error propagates.
+
+```lisp
+(try (get (aref (get config "api") 0) "target") ())  ; () when the path is missing
+(try (parse-v2 x)
+     (parse-v1 x)
+     (error 'bad-input "no parser matched"))
+```
+
+Use `try` where a fallback is the normal way to handle a failure. It
+replaces two older spellings:
+
+| Spelling | Problem that `try` removes |
+|---|---|
+| `(or (ignore-errors a) b)` | A result of `()` or `false` from `a` falls through to `b`. `try` returns it. |
+| A catch-all `handler-bind` for each fallback | Each fallback needs a nested lambda. |
+
+Rules:
+
+* `(try)` returns `()`. `(try x)` is `x`.
+* `try` drops the errors that `ignore-errors` drops. The same warning
+  applies: it also drops a typo such as an unbound symbol. Run `elps lint`,
+  and keep each guarded form small.
+* It never drops `internal-panic`, `step-limit-exceeded`,
+  `step-budget-exceeded` or `context-cancelled`. These conditions stop an
+  evaluation, and a fallback does not turn a stop into a value.
+* The side effects of a form that signals stay.
+* Like `ignore-errors`, it blocks tail-call optimization across the form.
+
+For a deep read of data that can be missing, prefer `elpspath:??`. It
+returns `()` when a step meets `()`, and still raises an error for a wrong
+type, which `try` would drop.
+
 ### Host Panics (`internal-panic`)
 
 If Go code called during evaluation — a builtin or special operator supplied
@@ -3253,6 +3301,7 @@ exactly like `(error 'my-condition "...")` and let the program keep running
 on top of it.  So:
 
 * `ignore-errors` does **not** suppress `internal-panic`; it propagates.
+* `try` does **not** drop `internal-panic`; it propagates.
 * the catch-all `condition` handler specifier does **not** match
   `internal-panic`.
 * an error raised by a `with-cleanup` cleanup form does **not** mask an
@@ -3309,6 +3358,8 @@ change.
 6. **`ignore-errors` returns `()`** on any ordinary error, the last value
    otherwise, and `()` with no body. A caught error and a body that returned
    `()` look the same.
+   **`try` returns the first value that does not signal**, and lets the last
+   form's error propagate. A returned `()` is a success.
 7. **`with-cleanup` never catches.** It returns the body value, runs its
    cleanup forms after the body (innermost `with-cleanup` first, before any
    enclosing handler), and lets the error keep propagating. A signalling
@@ -3318,8 +3369,8 @@ change.
    change. Code that must react to an error catches its condition and never
    compares its text.
 9. **`internal-panic` is never swallowed by accident.** The catch-all
-   `condition` does not match it, `ignore-errors` does not suppress it, and
-   `with-cleanup` never masks it. Only a handler that names `internal-panic`
+   `condition` does not match it, `ignore-errors` does not suppress it, `try`
+   does not drop it, and `with-cleanup` never masks it. Only a handler that names `internal-panic`
    explicitly intercepts it. A condition forged with
    `(error 'internal-panic ...)` is ordinary.
 10. **Deterministic.** Signalling and handling a condition gives the same value
