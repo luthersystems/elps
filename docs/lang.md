@@ -1571,6 +1571,18 @@ document.
 (elpspath:? order "lines" 5)           ; evaluates to ()
 ```
 
+A later step into that `()` raises an error with `?`. `??` is the nil-safe
+read: it is `?`, but a step into `()` returns `()`. A step into a leaf of the
+wrong type still raises an error, so `??` does not hide a fault in the data
+or the path.
+
+```lisp
+(elpspath:? order "missing" 0)         ; error: first argument is nil
+(elpspath:?? order "missing" 0)        ; evaluates to ()
+(elpspath:?? order "id" 0)             ; error: cannot index into int at path id
+(or (elpspath:?? order "missing" 0) "default")  ; evaluates to "default"
+```
+
 Keywords, other symbols, bytes, functions and native values are opaque
 leaves. Reading a leaf or an unrelated field succeeds regardless of the
 leaf's type. A further step into a leaf raises an error naming its type and
@@ -3270,6 +3282,10 @@ Rules:
   evaluation, and a fallback does not turn a stop into a value.
 * The side effects of a form that signals stay.
 * Like `ignore-errors`, it blocks tail-call optimization across the form.
+
+For a deep read of data that can be missing, prefer `elpspath:??`. It
+returns `()` when a step meets `()`, and still raises an error for a wrong
+type, which `try` would drop.
 
 ### Host Panics (`internal-panic`)
 
