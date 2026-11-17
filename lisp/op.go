@@ -146,6 +146,20 @@ var langSpecialOps = []*langBuiltin{
 		error. Returns the last value if no error occurs. The
 		internal-panic condition is not suppressed: a Go panic recovered
 		from host code signals a defect in that code, so it propagates.`},
+	{"try", Formals(VarArgSymbol, "exprs"), opTry,
+		`Evaluates exprs in order and returns the value of the first one
+		that does not signal an error. When an expr signals, its error is
+		dropped and the next expr is evaluated. The last expr is not
+		guarded: its value is returned and its error propagates, so a
+		program can give a default value or raise its own error last.
+		(try x) is x, and (try) returns (). A result of () or false is a
+		success, unlike (or (ignore-errors x) y).
+		The conditions that stop an evaluation are never caught and
+		always propagate: internal-panic (a Go panic recovered from host
+		code), step-limit-exceeded, step-budget-exceeded and
+		context-cancelled. A fallback must not turn a stop into a value.
+		Side effects of an expr that signals are not undone. Like
+		ignore-errors, blocks tail-call optimization across this form.`},
 	{"with-cleanup", Formals("cleanup", VarArgSymbol, "body"), opWithCleanup,
 		`Evaluates the body forms, then always evaluates the cleanup forms
 		-- whether the body returned normally or signalled. The first
@@ -1325,6 +1339,59 @@ func opIgnoreErrors(env *LEnv, args *LVal) *LVal {
 		}
 	}
 	return val
+}
+
+// opTry implements try, the fallback chain (luthersystems/elps#973).
+//
+// It exists because the two older ways to write a fallback both fall short.
+// (or (ignore-errors a) b) cannot tell an error from a real () or false
+// result, so it falls through on a success.  The handler-bind spelling is
+// correct but needs one nested lambda per fallback, and each lambda costs a
+// closure and extra evaluation steps, which a host with a step limit counts.
+//
+// try catches the same errors as ignore-errors, with one difference: it
+// also lets the conditions that stop an evaluation propagate (tryCatches).
+// Today the evaluator raises a stop again on the next step, so a fallback
+// after a stop fails too.  try does not depend on that: it returns the
+// first stop error unchanged, and runs no fallback code after a stop.
+func opTry(env *LEnv, args *LVal) *LVal {
+	if len(args.Cells) == 0 {
+		return Nil()
+	}
+	last := len(args.Cells) - 1
+	// No guarded expr may be terminal: a tail call out of it would leave
+	// this frame before its error comes back here to be caught.  The
+	// unguarded last expr is evaluated the same way, as ignore-errors and
+	// handler-bind do, so that the TROBlock rule stays the same for the
+	// whole form.
+	env.Runtime.Stack.Top().TROBlock = true
+	for _, c := range args.Cells[:last] {
+		val := env.Eval(c)
+		if !val.IsError() || !tryCatches(env.Runtime, val) {
+			return val
+		}
+	}
+	return env.Eval(args.Cells[last])
+}
+
+// tryCatches reports whether try drops error val and goes on to the next
+// expr.  It refuses a recovered Go panic, as ignore-errors does
+// (IsInternalPanic is not forgeable by lisp, so a lisp-raised
+// 'internal-panic stays catchable).  It also refuses the step limit, the
+// step budget and context cancellation, and any condition a program
+// defines under one of them, as handler-bind would match it.  These are
+// matched by name, so a program can raise one with error; it then
+// propagates, which is safe, because propagating is the default.
+func tryCatches(rt *Runtime, val *LVal) bool {
+	if IsInternalPanic(val) {
+		return false
+	}
+	for _, stop := range [...]string{CondStepLimitExceeded, CondStepBudgetExceeded, CondContextCancelled} {
+		if rt.ConditionIsA(val.Str, stop) {
+			return false
+		}
+	}
+	return true
 }
 
 // (cond (test-form then-form)*)

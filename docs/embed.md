@@ -2074,8 +2074,8 @@ This also applies to direct Go calls through `FunCall`, `FunCallContext`,
 input stream and library callbacks used by the `Load*` methods. Debugger and
 profiler callback panics are recovered at these evaluation/call boundaries.
 
-The carve-out that stops `ignore-errors` and the catch-all `condition` handler
-from swallowing the panic keys off a Go stack snapshot the interpreter attaches
+The carve-out that stops `ignore-errors`, `try` and the catch-all `condition`
+handler from swallowing the panic keys off a Go stack snapshot the interpreter attaches
 when it recovers the panic, not off the condition name. Embedders testing for
 one should use `lisp.IsInternalPanic(v)` rather than comparing the condition
 name.

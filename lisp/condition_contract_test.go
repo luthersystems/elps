@@ -177,6 +177,36 @@ func TestConditionContractIgnoreErrors(t *testing.T) {
 	})
 }
 
+func TestConditionContractTry(t *testing.T) {
+	t.Parallel()
+	env := contractEnv(t)
+	requireContractValue(t, env, `(try)`, `()`)
+	requireContractValue(t, env, `(try (progn (note 'a) (error 'boom)) (note 'b) (note 'c))`, `'b`)
+	// The first success wins: a later form does not run.  The failed
+	// form's side effect stays.
+	requireContractLog(t, env, `'('a 'b)`)
+	// Unlike ignore-errors, a returned () is a success.
+	requireContractValue(t, env, `(try () 'fallback)`, `()`)
+
+	t.Run("the last error propagates by name", func(t *testing.T) {
+		env := contractEnv(t)
+		v := env.LoadString("contract.lisp", `(try (error 'first 1) (error 'last 2))`)
+		require.Equal(t, lisp.LError, v.Type)
+		require.Equal(t, "last", v.Str)
+		require.False(t, lisp.IsInternalPanic(v))
+	})
+	t.Run("does not drop internal-panic", func(t *testing.T) {
+		env := contractEnv(t)
+		v := env.LoadString("contract.lisp", `(try (host-panic) 'fallback)`)
+		require.Equal(t, lisp.LError, v.Type)
+		require.True(t, lisp.IsInternalPanic(v))
+	})
+	t.Run("a forged internal-panic is an ordinary condition", func(t *testing.T) {
+		env := contractEnv(t)
+		requireContractValue(t, env, `(try (error 'internal-panic "forged") 'fallback)`, `'fallback`)
+	})
+}
+
 func TestConditionContractInternalPanic(t *testing.T) {
 	t.Parallel()
 	t.Run("the catch-all condition does not match it", func(t *testing.T) {

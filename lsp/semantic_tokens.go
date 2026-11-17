@@ -281,7 +281,7 @@ var specialOps = map[string]bool{
 	"if": true, "cond": true, "match": true, "when": true, "unless": true, "while": true, "default": true, "get-default": true, "or": true, "and": true, "not": true,
 	"set": true, "set!": true,
 	"progn": true, "loop": true, "dotimes": true,
-	"handler-bind": true, "ignore-errors": true, "rethrow": true,
+	"handler-bind": true, "ignore-errors": true, "try": true, "rethrow": true,
 	"with-cleanup": true,
 	"in-package":   true, "use-package": true, "export": true,
 	"quote": true, "quasiquote": true, "unquote": true,

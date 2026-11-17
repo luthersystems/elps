@@ -37,6 +37,9 @@
 (ignore-errors (risky-operation))
 ;^^^^^^^^^^^^^ keyword.control.elps
 
+(try (risky-operation) fallback)
+;^^^ keyword.control.elps
+
 (with-cleanup ((cleanup)) (risky-operation))
 ;^^^^^^^^^^^^ keyword.control.elps
 
