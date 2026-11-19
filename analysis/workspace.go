@@ -1147,8 +1147,11 @@ type WorkspacePrescan struct {
 	// runtime allows pkg:sym access to any symbol in a package.
 	PkgAllSymbols map[string][]ExternalSymbol
 	// DefForms are DefFormSpecs derived from defmacro definitions whose
-	// names start with "def". These can be injected into Config.DefForms
-	// for per-file analysis.
+	// names start with "def". Pass them to Config.DefForms as they are.
+	// Each has Inferred set, so with a MacroExpander a call is expanded
+	// and the spec is used only when it does not expand. A copy that
+	// drops Inferred stops the expansion again, and the names the calls
+	// define resolve only in their own file (luthersystems/elps#984).
 	DefForms []DefFormSpec
 	// PackageImports maps package name to the list of packages imported
 	// via use-package across all workspace files. This enables per-file
@@ -1918,8 +1921,10 @@ func remapPackageMap(m map[string][]ExternalSymbol, srcPkg string, shouldRemap f
 }
 
 // extractDefFormSpecs derives DefFormSpecs from defmacro definitions whose
-// names start with "def". This enables the analyzer to recognize these macros
-// as definition forms in other files during per-file analysis.
+// names start with "def". The specs are a guess from the name, so each is
+// Inferred. Without an expander, they let the analysis of each file read
+// such a call as a definition form. With one, they are the fallback for a
+// call that does not expand (luthersystems/elps#984).
 func extractDefFormSpecs(defs []ExternalSymbol) []DefFormSpec {
 	var specs []DefFormSpec
 	for _, sym := range defs {
@@ -1946,6 +1951,9 @@ func extractDefFormSpecs(defs []ExternalSymbol) []DefFormSpec {
 			BindsName:    true,
 			NameIndex:    1,
 			NameKind:     SymFunction,
+			// A guess by name: an expansion of the call, when there is
+			// one, is used instead (luthersystems/elps#984).
+			Inferred: true,
 		})
 	}
 	return specs
