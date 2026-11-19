@@ -122,6 +122,12 @@ func TestSpecialOp(t *testing.T) {
 			{`(#^(cons 1 %&optional) '(2))`, "'(1 2)", ""},
 			{`(#^'(cons 1 %))`, "'(cons 1 %)", ""},
 			{`(#^(list 1 '%))`, "'(1 '%)", ""},
+			// A string that starts with % is data, not a placeholder
+			// (luthersystems/elps#976).
+			{`(#^(list "%1"))`, `'("%1")`, ""},
+			{`(#^(format-string "%{}" %) 5)`, `"%5"`, ""},
+			{`(#^(list "%" %1) 1)`, `'("%" 1)`, ""},
+			{`(#^(list "%&rest"))`, `'("%&rest")`, ""},
 		}},
 		// The positional-placeholder index is read out of source text with
 		// strconv.Atoi and used as the length of the generated formals slice.
