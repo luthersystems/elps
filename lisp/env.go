@@ -3161,6 +3161,69 @@ type formalBindings struct {
 	putVarArgs bindfunc
 }
 
+// maxSmallKeyFormals is the largest number of &key formals that
+// bindSmallKeyArgs binds. A function with more &key formals uses the map in
+// bindFormalNext.
+const maxSmallKeyFormals = 16
+
+// bindSmallKeyArgs binds the &key formals in keyCells from the keyword
+// arguments left in args, with fixed arrays in place of a map. It gives the
+// same bindings and the same first error as the map path in bindFormalNext:
+//
+//   - A bad keyword argument is an error before any formal binds.
+//   - When a keyword is given twice, the last value wins.
+//   - When two formals have the same name, the first takes the value and the
+//     second binds nil.
+//   - After every formal binds, the first keyword in call order that matches
+//     no formal is an error.
+//
+// keyCells must hold at most maxSmallKeyFormals cells.
+func (env *LEnv) bindSmallKeyArgs(argSym *LVal, keyCells []*LVal, args *argParser, put bindfunc) *LVal {
+	var vals [maxSmallKeyFormals]*LVal
+	var found [maxSmallKeyFormals]bool
+	var unknown string
+	hasUnknown := false
+	for !args.IsEOF() {
+		key := args.Advance()
+		val := args.Advance()
+		if key.Type != LSymbol {
+			return env.Errorf("argument is not a keyword: %v", key.Type)
+		}
+		if !isKeyword(key.Str) {
+			return env.Errorf("argument is not a keyword: %v", key.Str)
+		}
+		name := key.Str[1:]
+		matched := false
+		for i, formal := range keyCells {
+			if formal.Str == name {
+				vals[i] = val
+				found[i] = true
+				matched = true
+				break
+			}
+		}
+		if !matched && !hasUnknown {
+			unknown, hasUnknown = name, true
+		}
+	}
+	for i, key := range keyCells {
+		if strings.HasPrefix(key.Str, MetaArgPrefix) {
+			return env.Errorf("function formal argument list contains a control symbol at an invalid location: %v", argSym.Str)
+		}
+		val := vals[i]
+		if !found[i] {
+			val = Nil()
+		}
+		if lerr := put(key, val); lerr.IsError() {
+			return lerr
+		}
+	}
+	if hasUnknown {
+		return env.Errorf("unrecognized keyword argument: %v", unknown)
+	}
+	return Nil()
+}
+
 func (env *LEnv) bindFormalNext(fun *LVal, formals *argParser, args *argParser, opts formalBindings) *LVal {
 	put, putVarArgs := opts.put, opts.putVarArgs
 
@@ -3187,6 +3250,9 @@ func (env *LEnv) bindFormalNext(fun *LVal, formals *argParser, args *argParser, 
 				}
 			}
 			return Nil()
+		}
+		if len(keyCells) <= maxSmallKeyFormals {
+			return env.bindSmallKeyArgs(argSym, keyCells, args, put)
 		}
 		keymap := make(map[string]*LVal, len(keyCells))
 		keys := make([]string, 0, len(keyCells))
