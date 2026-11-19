@@ -698,15 +698,31 @@ func NewValidatorEnv(env *lisp.LEnv, formals *lisp.LVal, fn lisp.LBuiltin) *lisp
 }
 
 // Checks constraints and type for boolean values
+//
+// The inner validator for the constraints is built once, here, as in
+// builtinCheckMap. With no constraints there is no inner validator.
 func builtinCheckBool(env *lisp.LEnv, name string, constraints []*lisp.LVal) *lisp.LVal {
+	// A boolean is the SYMBOL true or false.  The type check matters: a
+	// string "true" carries the same Str, and used to pass.
+	isBool := func(input *lisp.LVal) bool {
+		return input.Type == lisp.LSymbol && (input.Str == lisp.TrueSymbol || input.Str == lisp.FalseSymbol)
+	}
+	if len(constraints) == 0 {
+		// NB these aren't normal functions - they aren't looking for an array of args
+		return newValidator(env, lisp.Formals("input"), func(_ *lisp.LEnv, input, _ *lisp.LVal) *lisp.LVal {
+			if !isBool(input) {
+				return lisp.ErrorConditionf(WrongType, "Input was not a boolean for type %s", name)
+			}
+			return lisp.Nil()
+		})
+	}
+	rest := builtinCheckAny(env, constraints)
 	// NB these aren't normal functions - they aren't looking for an array of args
-	return newCapturedValidator(env, lisp.Formals("input"), lisp.QExpr(constraints), func(env *lisp.LEnv, input, captures *lisp.LVal) *lisp.LVal {
-		// A boolean is the SYMBOL true or false.  The type check matters: a
-		// string "true" carries the same Str, and used to pass.
-		if input.Type != lisp.LSymbol || (input.Str != lisp.TrueSymbol && input.Str != lisp.FalseSymbol) {
+	return newCapturedValidator(env, lisp.Formals("input"), rest, func(env *lisp.LEnv, input, captures *lisp.LVal) *lisp.LVal {
+		if !isBool(input) {
 			return lisp.ErrorConditionf(WrongType, "Input was not a boolean for type %s", name)
 		}
-		return applyConstraint(env, builtinCheckAny(env, captures.Cells), input)
+		return applyConstraint(env, captures, input)
 	})
 }
 
@@ -1400,8 +1416,7 @@ func builtinIsTrue(env *lisp.LEnv, _ *lisp.LVal) *lisp.LVal {
 func builtinIsFalsy(env *lisp.LEnv, _ *lisp.LVal) *lisp.LVal {
 	// NB these aren't normal functions - they aren't looking for an array of args
 	return newValidator(env, lisp.Formals(), func(env *lisp.LEnv, input, _ *lisp.LVal) *lisp.LVal {
-		val := applyConstraint(env, builtinIsTruthy(env, nil), input)
-		if val.IsError() {
+		if !isTruthy(input) {
 			return lisp.Nil()
 		}
 		return env.ErrorConditionf(FailedConstraint, "Value %v is not falsy", input)
@@ -1412,43 +1427,52 @@ func builtinIsFalsy(env *lisp.LEnv, _ *lisp.LVal) *lisp.LVal {
 func builtinIsTruthy(env *lisp.LEnv, _ *lisp.LVal) *lisp.LVal {
 	// NB these aren't normal functions - they aren't looking for an array of args
 	return newValidator(env, lisp.Formals(), func(env *lisp.LEnv, input, _ *lisp.LVal) *lisp.LVal {
-		if input.IsSymbol(lisp.TrueSymbol) {
+		if isTruthy(input) {
 			return lisp.Nil()
-		}
-		switch input.Type {
-		case lisp.LArray:
-			if arrayHasElements(input) {
-				return lisp.Nil()
-			}
-		case lisp.LSortMap, lisp.LBytes:
-			// A map's entries live in Map() and bytes in Bytes(), not in
-			// Cells, so Len is the only correct measure.
-			if input.Len() > 0 {
-				return lisp.Nil()
-			}
-		case lisp.LString:
-			if len(input.Str) > 0 && input.Str != lisp.FalseSymbol {
-				return lisp.Nil()
-			}
-		case lisp.LInt:
-			if input.Int > 0 {
-				return lisp.Nil()
-			}
-		case lisp.LFloat:
-			if input.Float > 0.0 {
-				return lisp.Nil()
-			}
-		case lisp.LInvalid, lisp.LError, lisp.LSymbol,
-			lisp.LSExpr, lisp.LFun, lisp.LQuote, lisp.LNative, lisp.LTaggedVal,
-			lisp.LMarkTerminal, lisp.LMarkTailRec, lisp.LMarkMacExpand,
-			lisp.LTypeMax:
-			// Not truthy.  Symbols other than 'true are handled by the
-			// TrueSymbol check above; everything else here has no truthiness
-			// rule and is rejected.  Enumerated so a new LType has to pick a
-			// side rather than defaulting to "not truthy".
 		}
 		return env.ErrorConditionf(FailedConstraint, "Value %v is not truthy", input)
 	})
+}
+
+// isTruthy reports whether input can reasonably be considered true. It is
+// the rule of s:is-truthy, and s:is-falsy is its negation.
+func isTruthy(input *lisp.LVal) bool {
+	if input.IsSymbol(lisp.TrueSymbol) {
+		return true
+	}
+	switch input.Type {
+	case lisp.LArray:
+		if arrayHasElements(input) {
+			return true
+		}
+	case lisp.LSortMap, lisp.LBytes:
+		// A map's entries live in Map() and bytes in Bytes(), not in
+		// Cells, so Len is the only correct measure.
+		if input.Len() > 0 {
+			return true
+		}
+	case lisp.LString:
+		if len(input.Str) > 0 && input.Str != lisp.FalseSymbol {
+			return true
+		}
+	case lisp.LInt:
+		if input.Int > 0 {
+			return true
+		}
+	case lisp.LFloat:
+		if input.Float > 0.0 {
+			return true
+		}
+	case lisp.LInvalid, lisp.LError, lisp.LSymbol,
+		lisp.LSExpr, lisp.LFun, lisp.LQuote, lisp.LNative, lisp.LTaggedVal,
+		lisp.LMarkTerminal, lisp.LMarkTailRec, lisp.LMarkMacExpand,
+		lisp.LTypeMax:
+		// Not truthy.  Symbols other than 'true are handled by the
+		// TrueSymbol check above; everything else here has no truthiness
+		// rule and is rejected.  Enumerated so a new LType has to pick a
+		// side rather than defaulting to "not truthy".
+	}
+	return false
 }
 
 // Reverses a constraint
