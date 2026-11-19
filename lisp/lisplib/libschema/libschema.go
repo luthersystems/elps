@@ -1270,6 +1270,11 @@ func builtinNoOtherKeys(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	}
 	// NB these aren't normal functions - they aren't looking for an array of args
 	return newCapturedValidator(env, lisp.Formals("input"), lisp.QExpr(constraints), func(env *lisp.LEnv, input, captures *lisp.LVal) *lisp.LVal {
+		// Check the type first, as s:has-key does. input.Map panics on a
+		// value that is not a sorted-map.
+		if input.Type != lisp.LSortMap {
+			return lisp.ErrorConditionf(WrongType, "Input is not sorted map")
+		}
 		allowedKeys := make(map[string]bool)
 		for _, c := range captures.Cells {
 			val := applyConstraint(env, c, input)
