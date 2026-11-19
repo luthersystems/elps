@@ -4,6 +4,7 @@ package lval_test
 
 import (
 	"math"
+	"strings"
 	"testing"
 
 	"github.com/luthersystems/elps/elpstest/oracle"
@@ -490,6 +491,47 @@ func TestArrayDimensionsMatchLibjson(t *testing.T) {
 	for _, dims := range [][]int{{1 << 62, 4}, {1 << 32, 1 << 32}, {1 << 62, 2, 2}} {
 		if b, err := lval.Marshal(lval.MakeArray(dims)); err == nil {
 			t.Errorf("Marshal(%v) wrote %s, want an error", dims, b)
+		}
+	}
+}
+
+// TestMapKeyTagsMatchLibjson: Unmarshal accepts a map key exactly when
+// libjson.LoadTyped does.  lval used to read "~?bogus" as false and take a
+// bytes or float tag as a key it could not find or marshal again
+// (luthersystems/elps#978).
+func TestMapKeyTagsMatchLibjson(t *testing.T) {
+	for _, key := range []string{
+		"", "a", "~", "~~", "~~a", "~:a", "~$a", "~$", "~$:a", "~$true", "~$false", "~?t", "~?f", "~?bogus", "~?",
+		"~i0", "~i-3", "~i12", "~i", "~ix", "~i+5", "~i007", "~i-0",
+		"~bAA==", "~d1", "~n1", "~zNaN", "~zINF", "~#list", "~x",
+	} {
+		// A "~$" name has the same rules as a value, so check it there too.
+		if strings.HasPrefix(key, "~$") {
+			val := `["` + key + `"]`
+			_, verr := lval.Unmarshal([]byte(val))
+			if _, lverr := libjson.LoadTyped([]byte(val)); (verr == nil) != (lverr == nil) {
+				t.Errorf("%s: Unmarshal: %v, LoadTyped: %v", val, verr, lverr)
+			}
+		}
+		in := `{"` + key + `":1}`
+		_, lerr := libjson.LoadTyped([]byte(in))
+		v, err := lval.Unmarshal([]byte(in))
+		if (err == nil) != (lerr == nil) {
+			t.Errorf("%s: Unmarshal: %v, LoadTyped: %v", in, err, lerr)
+			continue
+		}
+		if err != nil {
+			continue
+		}
+		b, err := lval.Marshal(v)
+		if err != nil {
+			t.Errorf("%s: Marshal of the decoded map: %v", in, err)
+			continue
+		}
+		lv, _ := libjson.LoadTyped([]byte(in))
+		want, _ := libjson.DumpTyped(lv)
+		if string(b) != string(want) {
+			t.Errorf("%s: Marshal wrote %s, DumpTyped writes %s", in, b, want)
 		}
 	}
 }
