@@ -39,6 +39,9 @@ func (ew *errWriter) displayWidth(s string) int {
 // a late line in a huge file cannot cause an unbounded read or allocation.
 func (r *Renderer) readSourceLineFor(ew *errWriter, file string, line int) string {
 	if ew.session == nil {
+		if ew.sources != nil {
+			return ew.sources.line(r, file, line)
+		}
 		return r.readSourceLine(file, line)
 	}
 	s := ew.session
