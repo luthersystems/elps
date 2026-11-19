@@ -22,15 +22,11 @@ import (
 // weaker property -- they are wrong-but-in-range highlighting, which is why the
 // assertion PR #448 added to FuzzLSPSession does not go red on either.
 //
-// UNITS.  Byte offsets, because that is the unit the server emits: the scanner
-// sets token.Location.Col to a byte offset within the line (Scanner.LocStart),
-// elpsToLSPPosition passes it through unchanged, and position.go slices lines
-// by byte throughout.  LSP 3.16 actually specifies UTF-16 code units by default
-// and this server neither negotiates positionEncoding nor converts, so its
-// columns are wrong for any non-ASCII line whatever this file asserts.  That is
-// a server-wide gap, filed separately and not fixable by a length; what these
-// tests can and do insist on is that a length be measured in the same unit as
-// the column it is added to.
+// UNITS.  The server sends UTF-16 columns and lengths unless the client
+// negotiated utf-8 (elps#991).  semanticTokenDefects converts each token back
+// to byte offsets (tokensInBytes) and then checks it against the text.  The
+// exact-span tables below use a utf-8 server, so their expectations are in
+// bytes.
 
 // tokenCoverage is one decoded token together with the source text it claims.
 type tokenCoverage struct {
@@ -55,10 +51,12 @@ type tokenCoverage struct {
 //     the matching one, or, being the first line of a multi-line literal, runs
 //     to the end of its line (elps#449 part b, and the escaped-newline
 //     overshoot found while fixing it).
+//
+// data must come from a server that sends UTF-16 columns, which is the default.
 func semanticTokenDefects(content string, data []protocol.UInteger) []string {
 	lines := strings.Split(content, "\n")
 	var bad []string
-	for _, tok := range decodeTokens(data) {
+	for _, tok := range tokensInBytes(lines, decodeTokens(data)) {
 		if tok.line < 0 || tok.line >= len(lines) {
 			bad = append(bad, fmt.Sprintf("token [%d:%d,+%d) is on line %d, but the document has %d lines",
 				tok.line, tok.startChar, tok.length, tok.line, len(lines)))
@@ -80,6 +78,29 @@ func semanticTokenDefects(content string, data []protocol.UInteger) []string {
 		}
 	}
 	return bad
+}
+
+// tokensInBytes converts UTF-16 token starts and lengths back to byte offsets
+// in lines.  A token on a line that does not exist is left as it is.
+func tokensInBytes(lines []string, toks []rawToken) []rawToken {
+	for i := range toks {
+		t := &toks[i]
+		if t.line < 0 || t.line >= len(lines) {
+			continue
+		}
+		start := byteColumnOf(lines[t.line], t.startChar)
+		end := byteColumnOf(lines[t.line], t.startChar+t.length)
+		t.startChar, t.length = start, end-start
+	}
+	return toks
+}
+
+// utf8Server returns a test server that negotiated utf-8, so its semantic
+// tokens are in bytes.
+func utf8Server() *Server {
+	s := testServer()
+	s.posEncoding.Store(int32(encodingUTF8))
+	return s
 }
 
 // coverageDefect returns "" if c covers a source atom, and otherwise says what
@@ -297,7 +318,7 @@ func TestSemanticTokensCoverStringLiterals(t *testing.T) {
 // including the ones that were already right so that a later change cannot
 // trade one class of literal for another.
 func TestSemanticTokensStringExactSpans(t *testing.T) {
-	s := testServer()
+	s := utf8Server()
 	for i, tc := range []struct {
 		content string
 		want    []rawToken
@@ -314,9 +335,9 @@ func TestSemanticTokensStringExactSpans(t *testing.T) {
 			{line: 0, startChar: 3, length: 6, tokenType: semTokenString},
 			{line: 0, startChar: 10, length: 1, tokenType: semTokenVariable},
 		}},
-		// GUARD: measured in BYTES, like the columns they are added to.  "é" is
-		// four bytes of source and "😀" six, and len(v.Str)+2 already got both
-		// right, so a fix in some other unit would have broken them.
+		// GUARD: under utf-8 a length is in BYTES, like the column it is added
+		// to.  "é" is four bytes of source and "😀" six.
+		// TestSemanticTokensPositionEncoding checks the UTF-16 lengths.
 		{`"é"`, []rawToken{{line: 0, startChar: 0, length: 4, tokenType: semTokenString}}},
 		{`"😀"`, []rawToken{{line: 0, startChar: 0, length: 6, tokenType: semTokenString}}},
 		// GUARD: a genuinely multi-line literal still gets its first line only.
@@ -341,8 +362,10 @@ func TestSemanticTokensStringExactSpans(t *testing.T) {
 //
 // (EndCol being in neither unit is a defect in its own right, filed separately;
 // elpsToLSPRange uses it directly, so it is not only this file's problem.)
+//
+// The server here negotiated utf-8, so the expectations are in bytes.
 func TestSemanticTokensNonASCIISymbolSpans(t *testing.T) {
-	s := testServer()
+	s := utf8Server()
 	for i, tc := range []struct {
 		content string
 		want    []rawToken

@@ -193,3 +193,24 @@ func decodeTokens(data []protocol.UInteger) []rawToken {
 	}
 	return tokens
 }
+
+// TestUTF16ColumnTableMatchesColumnOf: the per-line table that
+// tokensToUTF16 uses gives the column utf16ColumnOf gives, at every byte
+// offset and past the end of the line.
+func TestUTF16ColumnTableMatchesColumnOf(t *testing.T) {
+	for _, line := range []string{"", "abc", `(x "é" 😀 y)`, "😀😀", "aéÿ"} {
+		tbl := utf16ColumnTable(line)
+		for b := -1; b <= len(line)+3; b++ {
+			want := utf16ColumnOf(line, b)
+			got := b
+			if tbl != nil {
+				got = tableColumn(tbl, b)
+			} else if b < 0 {
+				got = 0
+			}
+			if got != want {
+				t.Fatalf("line %q byte %d: table %d, utf16ColumnOf %d", line, b, got, want)
+			}
+		}
+	}
+}

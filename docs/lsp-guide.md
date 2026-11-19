@@ -261,11 +261,12 @@ What is converted today:
   `prepareRename` range that goes with them. Rename is converted because its
   answer is applied to the file unread; a wrong unit there silently rewrites
   the program rather than misplacing a highlight.
+- **Semantic tokens.** Each token start and length is in UTF-16 code units.
 
 What is **not** converted yet, and still ships byte columns under UTF-16:
 diagnostics, hover, definition, references, document highlight, document and
 workspace symbols, folding and selection ranges, call hierarchy, linked editing
-ranges, inlay hint positions, code action edits, and semantic tokens. Those
+ranges, inlay hint positions and code action edits. Those
 misplace a range on a line with non-ASCII text; none of them writes to a file.
 (Code action `; nolint:` inserts use the byte length of the line, which is
 never smaller than the UTF-16 length, so clients clamp them to end of line and
