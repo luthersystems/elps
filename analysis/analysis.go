@@ -106,15 +106,14 @@ type DefFormSpec struct {
 	BindsName    bool
 	NameIndex    int
 	NameKind     SymbolKind
-	// Inferred marks a spec the workspace scan guessed from a macro's name
-	// (WorkspacePrescan.DefForms), not one an embedder wrote. With a
-	// MacroExpander, the analysis expands a call of an inferred head and
-	// uses the spec only when the call does not expand. The expansion is
-	// the real code: the guess cannot know what the macro defines, and a
-	// call that is not expanded gives no generated definition, so its
-	// name would resolve only in its own file (luthersystems/elps#984).
-	// A spec that is not inferred still wins over the expander: it is the
-	// embedder's grammar.
+	// Inferred marks a spec that the workspace scan guessed from a
+	// macro's name (WorkspacePrescan.DefForms). An embedder does not set
+	// it. With a MacroExpander, the analysis expands a call of an inferred
+	// head. It uses the spec only when the call does not expand. The
+	// expansion is the real code, and only its definitions carry
+	// GeneratedBy, which other files need to see them
+	// (luthersystems/elps#984). A spec that is not inferred is the
+	// embedder's grammar, so it still wins over the expander.
 	Inferred bool
 }
 

@@ -398,32 +398,40 @@ func defLikeMatch(node *lisp.LVal, cfg *Config) (defLikeSpec, bool) {
 	return defLikeSpec{}, false
 }
 
+// customDefLikeMatch returns the spec of Config.DefForms that node
+// matches. A spec that is not Inferred is tried before an inferred one,
+// so the spec that stops an expansion (explicitDefLikeMatch) is also the
+// one whose grammar defines the name and formals. A config can hold both
+// for one head when an embedder adds its own spec to
+// WorkspacePrescan.DefForms.
 func customDefLikeMatch(node *lisp.LVal, cfg *Config) (defLikeSpec, bool) {
 	if node == nil || node.Type != lisp.LSExpr || node.IsQuoted() || len(node.Cells) == 0 || cfg == nil {
 		return defLikeSpec{}, false
 	}
 	head := astutil.HeadSymbol(node)
-	for _, spec := range cfg.DefForms {
-		if spec.Head == "" || spec.Head != head {
-			continue
+	for _, inferred := range [2]bool{false, true} {
+		for _, spec := range cfg.DefForms {
+			if spec.Inferred != inferred || spec.Head == "" || spec.Head != head {
+				continue
+			}
+			if !validDefFormSpec(node, spec) {
+				continue
+			}
+			nameKind := spec.NameKind
+			if spec.BindsName &&
+				nameKind != SymVariable &&
+				nameKind != SymFunction &&
+				nameKind != SymMacro &&
+				nameKind != SymType {
+				nameKind = SymFunction
+			}
+			return defLikeSpec{
+				formalsIdx: spec.FormalsIndex,
+				bindsName:  spec.BindsName,
+				nameIdx:    spec.NameIndex,
+				nameKind:   nameKind,
+			}, true
 		}
-		if !validDefFormSpec(node, spec) {
-			continue
-		}
-		nameKind := spec.NameKind
-		if spec.BindsName &&
-			nameKind != SymVariable &&
-			nameKind != SymFunction &&
-			nameKind != SymMacro &&
-			nameKind != SymType {
-			nameKind = SymFunction
-		}
-		return defLikeSpec{
-			formalsIdx: spec.FormalsIndex,
-			bindsName:  spec.BindsName,
-			nameIdx:    spec.NameIndex,
-			nameKind:   nameKind,
-		}, true
 	}
 	return defLikeSpec{}, false
 }

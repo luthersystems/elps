@@ -193,17 +193,72 @@ func TestWithGeneratedDefinitions_InferredDefForm(t *testing.T) {
 	assert.Equal(t, []string{"macro-fn"}, namesOf(gen.Prescan().PkgAllSymbols["repro"], "macro-fn"))
 }
 
+// defunTracedMacro is a workspace def* macro: the scan infers a
+// DefFormSpec for it from its name.
+const defunTracedMacro = "(in-package 'repro)\n" +
+	"(defmacro defun-traced (name formals &rest body)\n" +
+	"  (quasiquote (defun (unquote name) (unquote formals) (unquote-splicing body))))\n"
+
+// rootSymbol returns the symbol name the analysis defined in its root
+// scope, or nil.
+func rootSymbol(r *Result, name string) *Symbol {
+	for _, sym := range r.Symbols {
+		if sym.Name == name && sym.Scope == r.RootScope {
+			return sym
+		}
+	}
+	return nil
+}
+
 // TestExplicitDefFormWinsOverExpansion checks that a DefFormSpec an
 // embedder supplies still takes priority over the expander: it is the
-// embedder's grammar, not a guess by name (luthersystems/elps#984).
+// embedder's grammar, not a guess by name (luthersystems/elps#984). The
+// call is not expanded, so its name comes from the spec and has no
+// GeneratedBy.
 func TestExplicitDefFormWinsOverExpansion(t *testing.T) {
-	scan, cfg, _ := generatedWorkspace(t, map[string]string{
-		"main.lisp": "(in-package 'repro)\n" +
-			"(defmacro defun-traced (name formals &rest body)\n" +
-			"  (quasiquote (defun (unquote name) (unquote formals) (unquote-splicing body))))\n" +
-			"(defun-traced macro-fn (x) (+ x 1))\n",
-	})
+	src := defunTracedMacro + "(defun-traced macro-fn (x) (+ x 1))\n"
+	_, cfg, _ := generatedWorkspace(t, map[string]string{"main.lisp": src})
 	cfg.DefForms = []DefFormSpec{{Head: "defun-traced", FormalsIndex: 2, BindsName: true, NameIndex: 1, NameKind: SymFunction}}
-	_, changed := scan.WithGeneratedDefinitions(cfg, nil, nil)
-	assert.False(t, changed, "an explicit spec is not expanded, so the call generates nothing")
+	r := AnalyzeFile([]byte(src), "main.lisp", cfg)
+	sym := rootSymbol(r, "macro-fn")
+	require.NotNil(t, sym, "the explicit spec defines macro-fn")
+	assert.Nil(t, sym.GeneratedBy, "an explicit spec stops the expansion")
+}
+
+// TestInferredDefFormUsesExpansion checks that the analysis of a file
+// follows the expansion of a call of an inferred head, not the guess
+// (luthersystems/elps#984). Here the macro defines a variable named in
+// its own body; the guess would define a function named by the first
+// argument.
+func TestInferredDefFormUsesExpansion(t *testing.T) {
+	src := "(in-package 'repro)\n" +
+		"(defmacro defvar-of (name formals &rest body)\n" +
+		"  (quasiquote (set 'var-thing 1)))\n" +
+		"(defvar-of thing (x) x)\n" +
+		"var-thing\n"
+	scan, cfg, _ := generatedWorkspace(t, map[string]string{"main.lisp": src})
+	cfg.DefForms = scan.Prescan().DefForms
+	require.NotEmpty(t, cfg.DefForms)
+	require.True(t, cfg.DefForms[0].Inferred)
+
+	r := AnalyzeFile([]byte(src), "main.lisp", cfg)
+	v := rootSymbol(r, "var-thing")
+	require.NotNil(t, v, "the expansion defines var-thing")
+	assert.NotNil(t, v.GeneratedBy)
+	assert.Nil(t, rootSymbol(r, "thing"), "the guess from the name is not used")
+}
+
+// TestExplicitDefFormBeforeInferred checks that, when an embedder adds
+// its own spec for a head the workspace also inferred, the embedder's
+// spec gives the grammar as well as stopping the expansion
+// (luthersystems/elps#984 review).
+func TestExplicitDefFormBeforeInferred(t *testing.T) {
+	src := defunTracedMacro + "(defun-traced macro-fn (x) (+ x 1))\n"
+	scan, cfg, _ := generatedWorkspace(t, map[string]string{"main.lisp": src})
+	// The inferred spec comes first and binds the name; the embedder's
+	// spec, later in the list, says the call defines no name.
+	cfg.DefForms = append(scan.Prescan().DefForms,
+		DefFormSpec{Head: "defun-traced", FormalsIndex: 2, BindsName: false})
+	r := AnalyzeFile([]byte(src), "main.lisp", cfg)
+	assert.Nil(t, rootSymbol(r, "macro-fn"), "the embedder's grammar defines no name")
 }
