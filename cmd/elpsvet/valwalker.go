@@ -229,6 +229,7 @@ var valueWalkerFunctions = map[string]string{ //nolint:gosec // G101: function n
 	"github.com/luthersystems/elps/minifier.firstDynamicEvaluation":                        "syntax walker: visits source forms with syntax and quote rules",
 	"github.com/luthersystems/elps/minifier.firstGlobalFallback":                           "syntax walker: raw forms keep macro templates and quoted data in the fallback scan",
 	"github.com/luthersystems/elps/minifier.literalExportArgument":                         "syntax walker: visits source forms with syntax and quote rules",
+	"github.com/luthersystems/elps/minifier.preserveKeyFormals":                            "syntax walker: visits unquoted source forms to find the formals after &key",
 	"github.com/luthersystems/elps/minifier.recordQualifiedReferences":                     "syntax walker: visits source forms with syntax and quote rules",
 	"github.com/luthersystems/elps/minifier.reserveNamesThatStay":                          "syntax walker: visits every symbol of source forms, quoted or not, to reserve names",
 	"github.com/luthersystems/elps/parser/rdparser.Parser.ParseConsExpression":             "syntax walker: visits source forms with syntax and quote rules",

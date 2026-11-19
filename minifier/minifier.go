@@ -153,6 +153,11 @@ func Minify(inputs []InputFile, cfg *Config) (*Result, error) {
 		}
 	}
 	preservePackageSurfaceSymbols(files, cfg, protected)
+	for i := range files {
+		for _, expr := range files[i].exprs {
+			preserveKeyFormals(files[i].analysis, expr, protected)
+		}
+	}
 	assignments2 := buildAssignments(files, cfg, protected)
 	assignments, assignmentKeys, symMap := assignments2.symbols, assignments2.globals, assignments2.symbolMap
 	for i := range files {
@@ -928,6 +933,32 @@ func configuredTopLevelNameNode(expr *lisp.LVal, cfg *Config) *lisp.LVal {
 		}
 	}
 	return nil
+}
+
+// preserveKeyFormals keeps the name of each symbol that follows &key in an
+// unquoted list below node. A keyword argument finds its &key formal by name
+// at run time, so a renamed formal breaks each call that passes it. The walk
+// does not check that the list is a lambda list. Keeping an extra name is
+// safe.
+func preserveKeyFormals(result *analysis.Result, node *lisp.LVal, protected *preservationSet) {
+	if node == nil || node.IsQuoted() || node.Type == lisp.LQuote {
+		return
+	}
+	afterKey := false
+	for _, child := range node.Cells {
+		if child == nil {
+			continue
+		}
+		if child.Type == lisp.LSymbol {
+			if child.Str == lisp.KeyArgSymbol {
+				afterKey = true
+			} else if afterKey {
+				preserveNodeSymbol(result, child, protected)
+			}
+			continue
+		}
+		preserveKeyFormals(result, child, protected)
+	}
 }
 
 func preserveNodeSymbol(result *analysis.Result, node *lisp.LVal, protected *preservationSet) {
