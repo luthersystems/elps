@@ -348,6 +348,16 @@ func tilde(s string, d *decoder) (Value, error) {
 	case '~':
 		return MakeString(s[1:]), nil
 	case '$':
+		// As libjson's checkSymbolName: DumpTyped writes these names
+		// another way, so a second spelling would not round trip.
+		switch {
+		case rest == "":
+			return Value{}, d.errorf("empty symbol")
+		case rest[0] == ':':
+			return Value{}, d.errorf("keyword written as a symbol")
+		case rest == "true" || rest == "false":
+			return Value{}, d.errorf("boolean written as a symbol")
+		}
 		return MakeSymbol(rest), nil
 	case ':':
 		// Not MakeKeyword, which would drop a colon the name starts with.
@@ -616,21 +626,37 @@ func (d *decoder) object(depth int) (Value, error) {
 	}
 }
 
+// mapKey reads a typed JSON member name.  It accepts the key tags that
+// libjson's typedDecoder.key accepts and no others: a key must be a
+// string, symbol, keyword, int or boolean, so a bytes or float tag here
+// would build a map that cannot find or marshal its own key
+// (luthersystems/elps#978).
 func mapKey(s string, d *decoder) (Value, error) {
-	if len(s) < 2 || s[0] != '~' {
+	if s == "" || s[0] != '~' {
 		return MakeString(s), nil
 	}
-	switch s[1] {
-	case 'i':
-		n, err := strconv.ParseInt(s[2:], 10, 64)
-		if err != nil {
-			return Value{}, d.errorf("bad int key")
+	if len(s) >= 2 {
+		switch s[1] {
+		case 'i':
+			// Only canonical digits, as libjson: "~i007" and "~i+5"
+			// would otherwise be a second spelling of one key.
+			n, err := strconv.ParseInt(s[2:], 10, 64)
+			if err != nil || strconv.FormatInt(n, 10) != s[2:] {
+				return Value{}, d.errorf("bad int key")
+			}
+			return MakeInt(n), nil
+		case '?':
+			switch s {
+			case "~?t":
+				return MakeBool(true), nil
+			case "~?f":
+				return MakeBool(false), nil
+			}
+		case '~', '$', ':':
+			return tilde(s, d)
 		}
-		return MakeInt(n), nil
-	case '?':
-		return MakeBool(s == "~?t"), nil
 	}
-	return tilde(s, d)
+	return Value{}, d.errorf("invalid tagged key " + strconv.Quote(s))
 }
 
 // str reads a JSON string.

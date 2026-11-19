@@ -63,7 +63,9 @@ func TestPredicateLimitsObserveCancellationBetweenCallbacks(t *testing.T) {
 		{"insert predicate", `(insert-sorted 'vector source predicate 0)`, 0, 0, 1, false},
 		{"sort first key", `(stable-sort predicate source key)`, 1, 1, 0, false},
 		{"sort second key", `(stable-sort predicate source key)`, 2, 2, 0, false},
-		{"sort predicate after keys", `(stable-sort predicate source key)`, 0, 2, 1, false},
+		// stable-sort keys all 8 elements before its first comparison
+		// (luthersystems/elps#980).
+		{"sort predicate after keys", `(stable-sort predicate source key)`, 0, 8, 1, false},
 		{"insert first key", `(insert-sorted 'vector source predicate 0 key)`, 1, 1, 0, false},
 		{"insert second key", `(insert-sorted 'vector source predicate 0 key)`, 2, 2, 0, false},
 		{"insert predicate after keys", `(insert-sorted 'vector source predicate 0 key)`, 0, 2, 1, false},

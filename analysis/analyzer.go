@@ -484,6 +484,13 @@ func heuristicDefLikeFormalsIndex(node *lisp.LVal) int {
 	if !strings.HasPrefix(head, "def") {
 		return -1
 	}
+	if head == "defconst" {
+		// defconst's arguments are a name, a value and a docstring.  Its
+		// value is code: (defconst x (f a b) "doc") calls f, so the
+		// value must not be read as a formals list
+		// (luthersystems/elps#977).
+		return -1
+	}
 
 	// Find the first child (after head) that looks like a formals list.
 	for i := 1; i < len(node.Cells)-1; i++ {

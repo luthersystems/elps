@@ -592,7 +592,10 @@ func countExprArgs(expr *LVal) (exprArgCounts, error) {
 	case LSExpr:
 		short := false
 		for _, cell := range expr.Cells {
-			if cell.quoted {
+			// Only a symbol can be a placeholder.  A string keeps its text
+			// in Str too, so without the type check "%1" in
+			// #^(list "%1") would add a formal (luthersystems/elps#976).
+			if cell.quoted || cell.Type != LSymbol {
 				continue
 			}
 			if !strings.HasPrefix(cell.Str, "%") {

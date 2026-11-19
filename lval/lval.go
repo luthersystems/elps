@@ -26,6 +26,7 @@
 package lval
 
 import (
+	"bytes"
 	"slices"
 	"strconv"
 	"strings"
@@ -304,28 +305,201 @@ func (v *Value) Set(key, val Value) {
 		v.keys = slices.Delete(v.keys, i, i+1)
 		v.items = slices.Delete(v.items, i, i+1)
 	}
-	kt, _ := keyText(key)
-	i, _ := slices.BinarySearchFunc(v.keys, kt, func(k Value, t string) int {
-		s, _ := keyText(k)
-		return strings.Compare(s, t)
-	})
+	i, _ := slices.BinarySearchFunc(v.keys, partsOf(key), compareKeyParts)
 	v.keys = slices.Insert(v.keys, i, key)
 	v.items = slices.Insert(v.items, i, val)
 }
 
 // find returns the position of the map's key that is the same ELPS key as
 // key.
+//
+// The keys are sorted by keyText, and one ELPS key has at most four key
+// texts (string, symbol, keyword, boolean spellings of one name; an int
+// has one). find binary searches each of them and compares without
+// building strings, so a lookup costs O(log n) and allocates nothing
+// (luthersystems/elps#979). Set keeps one key per ELPS key, so at most one
+// of the searches can match.
 func (v Value) find(key Value) (int, bool) {
-	id, ok := keyID(key)
-	if !ok {
-		return 0, false
-	}
-	for i, k := range v.keys {
-		if kid, _ := keyID(k); kid == id {
-			return i, true
+	var cand [4]keyParts
+	n := candidateKeyTexts(key, &cand)
+	for _, c := range cand[:n] {
+		i, ok := slices.BinarySearchFunc(v.keys, c, compareKeyParts)
+		// A key of a kind that is no map key (a float, say) has the key
+		// text "" and sorts with the string "", so skip such keys among
+		// the equal texts.
+		for ; ok && i < len(v.keys) && compareKeyParts(v.keys[i], c) == 0; i++ {
+			if isKeyKind(v.keys[i].kind) {
+				return i, true
+			}
 		}
 	}
 	return 0, false
+}
+
+// isKeyKind reports whether a key of kind k is an ELPS map key, as keyID
+// accepts it.
+func isKeyKind(k Kind) bool {
+	switch k {
+	case String, Symbol, Keyword, Bool, Int:
+		return true
+	default:
+	}
+	return false
+}
+
+// keyParts is a key text split as prefix+body, so that comparing two key
+// texts needs no concatenation. An int key keeps its value; its body is
+// the decimal digits.
+type keyParts struct {
+	prefix string
+	body   string
+	isInt  bool
+	i      int64
+}
+
+func partsOf(k Value) keyParts {
+	switch k.kind {
+	case String:
+		if strings.HasPrefix(k.str, "~") {
+			return keyParts{prefix: "~", body: k.str}
+		}
+		return keyParts{body: k.str}
+	case Symbol:
+		return keyParts{prefix: "~$", body: k.str}
+	case Keyword:
+		return keyParts{prefix: "~:", body: k.str}
+	case Int:
+		return keyParts{prefix: "~i", isInt: true, i: k.i}
+	case Bool:
+		if k.i == 1 {
+			return keyParts{prefix: "~?t"}
+		}
+		return keyParts{prefix: "~?f"}
+	default:
+	}
+	return keyParts{}
+}
+
+// candidateKeyTexts writes the key texts of every key that is the same
+// ELPS key as k, as keyID defines it, and returns how many it wrote.
+func candidateKeyTexts(k Value, out *[4]keyParts) int {
+	switch k.kind {
+	case Int:
+		out[0] = partsOf(k)
+		return 1
+	case String, Symbol, Keyword, Bool:
+	default:
+		return 0
+	}
+	if k.kind == Keyword {
+		// The ELPS name is ":"+k.str. Build its key texts from k.str so
+		// that the lookup allocates nothing. A name that starts with ':'
+		// is never a boolean and needs no '~' escape.
+		out[0] = keyParts{prefix: ":", body: k.str}
+		out[1] = keyParts{prefix: "~$:", body: k.str}
+		out[2] = keyParts{prefix: "~:", body: k.str}
+		return 3
+	}
+	// The ELPS name: keyID is "s" followed by it.
+	name := k.str
+	if k.kind == Bool {
+		name = "false"
+		if k.i == 1 {
+			name = "true"
+		}
+	}
+	n := 0
+	out[n] = partsOf(MakeString(name))
+	n++
+	out[n] = keyParts{prefix: "~$", body: name}
+	n++
+	if strings.HasPrefix(name, ":") {
+		out[n] = keyParts{prefix: "~:", body: name[1:]}
+		n++
+	}
+	switch name {
+	case "true":
+		out[n] = keyParts{prefix: "~?t"}
+		n++
+	case "false":
+		out[n] = keyParts{prefix: "~?f"}
+		n++
+	}
+	return n
+}
+
+// compareKeyParts compares k's key text with c's, as strings.Compare
+// would compare the two keyText strings.
+func compareKeyParts(k Value, c keyParts) int {
+	a := partsOf(k)
+	switch {
+	case !a.isInt && !c.isInt:
+		return compareConcat(a.prefix, a.body, c.prefix, c.body)
+	case a.isInt && c.isInt:
+		// One prefix, "~i": the digits decide.
+		var abuf, cbuf [24]byte
+		return bytes.Compare(strconv.AppendInt(abuf[:0], a.i, 10), strconv.AppendInt(cbuf[:0], c.i, 10))
+	}
+	// An int key against a string-like key. The texts differ by the
+	// third byte at the latest unless the other text starts with "~i".
+	var buf [26]byte
+	if a.isInt {
+		return -compareConcatBytes(c.prefix, c.body, strconv.AppendInt(append(buf[:0], a.prefix...), a.i, 10))
+	}
+	return compareConcatBytes(a.prefix, a.body, strconv.AppendInt(append(buf[:0], c.prefix...), c.i, 10))
+}
+
+// compareConcat compares xp+xb with yp+yb without building either.
+func compareConcat(xp, xb, yp, yb string) int {
+	for {
+		if xp == "" {
+			xp, xb = xb, ""
+		}
+		if yp == "" {
+			yp, yb = yb, ""
+		}
+		if xp == "" || yp == "" {
+			break
+		}
+		n := min(len(xp), len(yp))
+		if c := strings.Compare(xp[:n], yp[:n]); c != 0 {
+			return c
+		}
+		xp, yp = xp[n:], yp[n:]
+	}
+	switch {
+	case xp == "" && yp == "":
+		return 0
+	case xp == "":
+		return -1
+	}
+	return 1
+}
+
+// compareConcatBytes compares xp+xb with y.
+func compareConcatBytes(xp, xb string, y []byte) int {
+	l := len(xp) + len(xb)
+	for i := 0; i < l && i < len(y); i++ {
+		var cx byte
+		if i < len(xp) {
+			cx = xp[i]
+		} else {
+			cx = xb[i-len(xp)]
+		}
+		if cx != y[i] {
+			if cx < y[i] {
+				return -1
+			}
+			return 1
+		}
+	}
+	switch {
+	case l < len(y):
+		return -1
+	case l > len(y):
+		return 1
+	}
+	return 0
 }
 
 // keyID is what makes two map keys the same ELPS key.

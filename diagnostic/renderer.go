@@ -4,7 +4,6 @@ package diagnostic
 
 import (
 	"bufio"
-	"bytes"
 	"fmt"
 	"io"
 	"os"
@@ -24,9 +23,15 @@ type Renderer struct {
 
 // Render writes a single diagnostic to w.
 func (r *Renderer) Render(w io.Writer, d Diagnostic) error {
-	p := choosePalette(r.Color, fileFromWriter(w))
-	bw := bufio.NewWriter(w)
-	ew := &errWriter{w: bw}
+	return r.render(bufio.NewWriter(w), choosePalette(r.Color, fileFromWriter(w)), d, nil)
+}
+
+// render writes d to bw and flushes it. sources caches the files that
+// spans read, so that the spans of one RenderAll read each file once
+// (luthersystems/elps#981). Render passes nil: one diagnostic reads only a
+// few lines, so it scans as before and holds no whole file in memory.
+func (r *Renderer) render(bw *bufio.Writer, p palette, d Diagnostic, sources sourceCache) error {
+	ew := &errWriter{w: bw, sources: sources}
 
 	// Header: "error: message" or "warning: message"
 	r.writeHeader(ew, d, p)
@@ -47,15 +52,20 @@ func (r *Renderer) Render(w io.Writer, d Diagnostic) error {
 	return bw.Flush()
 }
 
-// RenderAll writes all diagnostics to w separated by blank lines.
+// RenderAll writes all diagnostics to w separated by blank lines. It
+// flushes after each diagnostic, as Render does, and shares one buffer and
+// one source cache across them.
 func (r *Renderer) RenderAll(w io.Writer, diags []Diagnostic) error {
+	p := choosePalette(r.Color, fileFromWriter(w))
+	bw := bufio.NewWriter(w)
+	sources := sourceCache{}
 	for i, d := range diags {
 		if i > 0 {
 			if _, err := io.WriteString(w, "\n"); err != nil {
 				return err
 			}
 		}
-		if err := r.Render(w, d); err != nil {
+		if err := r.render(bw, p, d, sources); err != nil {
 			return err
 		}
 	}
@@ -68,6 +78,9 @@ type errWriter struct {
 	w       io.Writer
 	err     error
 	session *Session
+	// sources caches source files for the unbounded path (no session).
+	// nil reads the file for each span.
+	sources sourceCache
 }
 
 func (ew *errWriter) printf(format string, a ...any) {
@@ -223,23 +236,11 @@ func (r *Renderer) readSourceLine(file string, line int) string {
 	if line <= 0 || file == "" || file == "<native code>" {
 		return ""
 	}
-	reader := r.SourceReader
-	if reader == nil {
-		reader = func(name string) ([]byte, error) {
-			return os.ReadFile(name) //nolint:gosec // reads user-specified source files for display
-		}
-	}
-	data, err := reader(file)
+	data, err := r.readSource(file)
 	if err != nil {
 		return ""
 	}
-	scanner := bufio.NewScanner(bytes.NewReader(data))
-	for i := 1; scanner.Scan(); i++ {
-		if i == line {
-			return scanner.Text()
-		}
-	}
-	return ""
+	return scanSourceLine(data, line)
 }
 
 // detectEndCol scans from col to find the end of the current token.

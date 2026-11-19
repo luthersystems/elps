@@ -1029,3 +1029,30 @@ func TestMinifySource_GeneratedNamesAvoidNamesThatStay(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, string(out), string(again))
 }
+
+// defconst evaluates its value and exports its name, so the value is code
+// and the name is public.  Analysis used to read (add a b) in a defconst
+// with a docstring as a formals list, and minify renamed add there to a
+// fresh parameter and renamed the exported constant
+// (luthersystems/elps#977).
+func TestMinify_DefconstExecutionEquivalence(t *testing.T) {
+	for _, form := range []string{"defconst", "lisp:defconst"} {
+		t.Run(form, func(t *testing.T) {
+			src := []byte(`(defun add (x y) (+ x y))
+(set 'a 10)
+(set 'b 32)
+(` + form + ` total (add a b) "sum of a and b")
+(defun show () (debug-print total))
+(show)`)
+			out, symMap, err := MinifySource(src, "defconst.lisp", nil)
+			require.NoError(t, err)
+			original, originalErr := evalDebugOutput(t, src)
+			require.NoError(t, originalErr)
+			require.Equal(t, "42\n", original)
+			minified, minifiedErr := evalDebugOutput(t, out)
+			require.NoError(t, minifiedErr, "minified source: %s", out)
+			assert.Equal(t, original, minified)
+			assert.NotContains(t, symMap.OriginalToMinified, "total", "minified source: %s", out)
+		})
+	}
+}

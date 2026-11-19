@@ -87,6 +87,25 @@ func TestSortComparatorArgumentsAreTheElements(t *testing.T) {
 				`'((sorted-map 'key 1 'keyed true) (sorted-map 'key 2 'keyed true))`, ""},
 			{`(map 'list (lambda (m) (key? m 'keyed)) (list m1 m2))`, `'(true true)`, ""},
 		}},
+		// The key function runs once per element, in list order, before
+		// any comparison (luthersystems/elps#980).
+		{"stable-sort key function runs once per element", elpstest.TestSequence{
+			{`(set 'calls (vector))`, `(vector)`, ""},
+			{`(stable-sort < (list 5 3 8 1 9 2 7 4 6 0) (lambda (x) (append! calls x) (- x)))`,
+				`'(9 8 7 6 5 4 3 2 1 0)`, ""},
+			{`calls`, `(vector 5 3 8 1 9 2 7 4 6 0)`, ""},
+			// Stability with equal keys.
+			{`(stable-sort < (list "bb" "a" "cc" "d") #^(length %))`, `'("a" "d" "bb" "cc")`, ""},
+			// A key function error stops the sort before any element moves.
+			{`(set 'xs (list 3 1 2))`, `'(3 1 2)`, ""},
+			{`(handler-bind ((condition (lambda (c &rest _) 'failed))) (stable-sort < xs (lambda (x) (if (= x 2) (error 'bad-key "no key") x))))`, `'failed`, ""},
+			{`xs`, `'(3 1 2)`, ""},
+			// One element or none: no comparison, so no key call.
+			{`(set 'calls (vector))`, `(vector)`, ""},
+			{`(stable-sort < (list 1) (lambda (x) (append! calls x) x))`, `'(1)`, ""},
+			{`(stable-sort < (list) (lambda (x) (append! calls x) x))`, `'()`, ""},
+			{`calls`, `(vector)`, ""},
+		}},
 		{"insert-sorted predicate", elpstest.TestSequence{
 			{`(set 'm1 (sorted-map 'key 1))`, `(sorted-map 'key 1)`, ""},
 			{`(set 'm2 (sorted-map 'key 2))`, `(sorted-map 'key 2)`, ""},
