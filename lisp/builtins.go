@@ -375,7 +375,9 @@ var (
 		{"stable-sort", Formals("less-predicate", "list", VarArgSymbol, "key-fun"), builtinSortStable,
 			`Sorts list using the binary less-predicate and returns the
 			sorted list. The sort is stable. An optional key-fun extracts
-			comparison keys from elements. Both callbacks must be regular
+			comparison keys from elements. key-fun runs once per element, in
+			list order, before any comparison, and does not run for a list
+			of fewer than two elements. Both callbacks must be regular
 			functions; elements and keys are passed as data without evaluation.
 			A mutable list is sorted in
 			place, so sorting a slice view also sorts that region of its
@@ -2662,10 +2664,18 @@ func builtinSortStable(env *LEnv, args *LVal) *LVal {
 	}
 	cells := seqCells(list)
 	sortCells := &lvalByFun{
-		env:    env,
-		fun:    less,
-		keyfun: keyFun,
-		cells:  cells,
+		env:   env,
+		fun:   less,
+		cells: cells,
+	}
+	// With fewer than two cells nothing is compared, so key-fun does not
+	// run, as before #980.
+	if keyFun != nil && len(cells) > 1 {
+		keys, err := sortKeys(env, keyFun, cells)
+		if err != nil {
+			return err
+		}
+		sortCells.keys = keys
 	}
 	sort.Stable(sortCells)
 	if sortCells.err != nil {
@@ -2674,12 +2684,33 @@ func builtinSortStable(env *LEnv, args *LVal) *LVal {
 	return list
 }
 
+// sortKeys calls keyFun once on each cell, in order, and returns the keys.
+// Keying inside Less ran key-fun twice per comparison, about 2*n*log(n)
+// calls in all (luthersystems/elps#980).  On an error it returns the error
+// before the sort moves any element.
+func sortKeys(env *LEnv, keyFun *LVal, cells []*LVal) ([]*LVal, *LVal) {
+	if lerr := env.checkAlloc(len(cells)); lerr.IsError() {
+		return nil, lerr
+	}
+	keys := make([]*LVal, len(cells))
+	for i, c := range cells {
+		k := env.callValueFunction(keyFun, Cells{c}.List())
+		if k.IsError() {
+			return nil, k
+		}
+		keys[i] = k
+	}
+	return keys, nil
+}
+
 type lvalByFun struct {
-	env    *LEnv
-	fun    *LVal
-	keyfun *LVal
-	err    *LVal
-	cells  []*LVal
+	env *LEnv
+	fun *LVal
+	err *LVal
+	// keys holds key-fun's result for each cell, in step with cells, or
+	// nil when there is no key-fun.
+	keys  []*LVal
+	cells []*LVal
 }
 
 func (s *lvalByFun) Len() int {
@@ -2691,6 +2722,9 @@ func (s *lvalByFun) Swap(i, j int) {
 		return
 	}
 	s.cells[i], s.cells[j] = s.cells[j], s.cells[i]
+	if s.keys != nil {
+		s.keys[i], s.keys[j] = s.keys[j], s.keys[i]
+	}
 }
 
 func (s *lvalByFun) Less(i, j int) bool {
@@ -2713,17 +2747,8 @@ func (s *lvalByFun) Less(i, j int) bool {
 	// TestSortComparatorArgumentsAreTheElements pins both. Pass those
 	// elements as values: evaluating an S-expression here would execute
 	// list data or resolve symbol data before the callback received it.
-	if s.keyfun != nil {
-		a = s.env.callValueFunction(s.keyfun, Cells{a}.List())
-		if a.IsError() {
-			s.err = a
-			return false
-		}
-		b = s.env.callValueFunction(s.keyfun, Cells{b}.List())
-		if b.IsError() {
-			s.err = b
-			return false
-		}
+	if s.keys != nil {
+		a, b = s.keys[i], s.keys[j]
 	}
 	ok := s.env.callValueFunction(s.fun, Cells{a, b}.List())
 	if ok.IsError() {
