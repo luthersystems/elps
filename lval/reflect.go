@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/luthersystems/elps/elpstag"
 )
@@ -218,21 +219,38 @@ func decode(v Value, dst reflect.Value, path string, depth int) error {
 		if v.kind != Map {
 			return decodeErr(path, v, dst.Type().String())
 		}
-		fields := elpstag.Fields(dst.Type())
+		plan := structPlanOf(dst.Type())
+		fields := plan.fields
 		// A field keeps its first matching key in the order lisp.DecodeInto
 		// reads them, by name, unless a later one is spelled exactly as
 		// its name.
-		match := make([]int, len(fields))
-		exact := make([]bool, len(fields))
+		var matchBuf [smallStruct]int
+		var exactBuf [smallStruct]bool
+		var match []int
+		var exact []bool
+		if len(fields) <= smallStruct {
+			match, exact = matchBuf[:len(fields)], exactBuf[:len(fields)]
+		} else {
+			match, exact = make([]int, len(fields)), make([]bool, len(fields))
+		}
 		for i := range match {
 			match[i] = -1
 		}
-		for _, j := range namedKeys(v) {
-			i, e := elpstag.Find(fields, keyName(v.keys[j]))
+		take := func(j int) {
+			i, e := plan.find(keyName(v.keys[j]))
 			if i < 0 || match[i] >= 0 && (exact[i] || !e) {
-				continue
+				return
 			}
 			match[i], exact[i] = j, e
+		}
+		if keysInNameOrder(v) {
+			for j := range v.keys {
+				take(j)
+			}
+		} else {
+			for _, j := range namedKeys(v) {
+				take(j)
+			}
 		}
 		for i, f := range fields {
 			if match[i] < 0 {
@@ -488,24 +506,174 @@ func encode(rv reflect.Value, path string, depth int) (Value, error) {
 		}
 		return buildMap(keys, vals), nil
 	case reflect.Struct:
-		fields := elpstag.Fields(rv.Type())
-		if len(fields) == 0 && rv.NumField() > 0 {
-			return Value{}, errors.New("lval: " + orValue(path) + ": cannot encode a " + rv.Type().String() + ": it has no exported fields")
-		}
-		var keys, vals []Value
-		for _, f := range fields {
-			fv := rv.Field(f.Index)
-			if f.OmitEmpty && fv.IsZero() {
-				continue
-			}
-			ev, err := encode(fv, joinPath(path, f.Name), depth+1)
-			if err != nil {
-				return Value{}, err
-			}
-			keys, vals = append(keys, MakeString(f.Name)), append(vals, ev)
-		}
-		return buildMap(keys, vals), nil
+		return encodeStruct(rv, path, depth)
 	default:
 	}
 	return Value{}, errors.New("lval: " + orValue(path) + ": cannot encode a " + rv.Type().String())
+}
+
+// encodeStruct encodes a struct as a sorted map with a key per field. It
+// encodes the fields in struct order, so the first error is the first bad
+// field. Each value goes to its key's place in the map, so no sort runs.
+func encodeStruct(rv reflect.Value, path string, depth int) (Value, error) {
+	plan := structPlanOf(rv.Type())
+	fields := plan.fields
+	if len(fields) == 0 && rv.NumField() > 0 {
+		return Value{}, errors.New("lval: " + orValue(path) + ": cannot encode a " + rv.Type().String() + ": it has no exported fields")
+	}
+	vals := make([]Value, len(fields))
+	var omitBuf [smallStruct]bool
+	var omit []bool
+	omitted := 0
+	for i, f := range fields {
+		fv := rv.Field(f.Index)
+		if f.OmitEmpty && fv.IsZero() {
+			if omit == nil {
+				if len(fields) <= smallStruct {
+					omit = omitBuf[:len(fields)]
+				} else {
+					omit = make([]bool, len(fields))
+				}
+			}
+			omit[plan.pos[i]] = true
+			omitted++
+			continue
+		}
+		ev, err := encode(fv, joinPath(path, f.Name), depth+1)
+		if err != nil {
+			return Value{}, err
+		}
+		vals[plan.pos[i]] = ev
+	}
+	keys := make([]Value, 0, len(fields)-omitted)
+	if omitted == 0 {
+		keys = append(keys, plan.keys...)
+		return Value{kind: Map, keys: keys, items: vals}, nil
+	}
+	items := vals[:0]
+	for p := range vals {
+		if omit[p] {
+			continue
+		}
+		keys = append(keys, plan.keys[p])
+		items = append(items, vals[p])
+	}
+	return Value{kind: Map, keys: keys, items: items}, nil
+}
+
+// smallStruct is the largest number of fields for which Decode and Encode
+// keep their per-field work arrays on the stack.
+const smallStruct = 32
+
+// structPlan is what Decode and Encode need to know about a struct type.
+// structPlanOf makes it once per type.
+type structPlan struct {
+	// fields are the type's fields, as elpstag.Fields returns them.
+	fields []elpstag.Field
+	// keys are the fields' map keys in map order.
+	keys []Value
+	// pos is the place of fields[i]'s key in keys.
+	pos []int
+	// exact finds a field by its exact name.
+	exact map[string]int
+	// fold finds a field by its name in ASCII lower case. It is nil when a
+	// field name is not ASCII.
+	fold map[string]int
+}
+
+var structPlans sync.Map // reflect.Type -> *structPlan
+
+// structPlanOf returns the plan for struct type t.
+func structPlanOf(t reflect.Type) *structPlan {
+	if p, ok := structPlans.Load(t); ok {
+		return p.(*structPlan) //nolint:forcetypeassert // only *structPlan is stored
+	}
+	fields := elpstag.Fields(t)
+	p := &structPlan{
+		fields: fields,
+		keys:   make([]Value, len(fields)),
+		pos:    make([]int, len(fields)),
+		exact:  make(map[string]int, len(fields)),
+		fold:   make(map[string]int, len(fields)),
+	}
+	order := make([]int, len(fields))
+	for i, f := range fields {
+		order[i] = i
+		p.exact[f.Name] = i
+		if p.fold != nil && isASCII(f.Name) {
+			p.fold[strings.ToLower(f.Name)] = i
+		} else {
+			p.fold = nil
+		}
+	}
+	// Sort as buildMap does: by key text.
+	slices.SortStableFunc(order, func(a, b int) int {
+		ta, _ := keyText(MakeString(fields[a].Name))
+		tb, _ := keyText(MakeString(fields[b].Name))
+		return strings.Compare(ta, tb)
+	})
+	for at, i := range order {
+		p.keys[at] = MakeString(fields[i].Name)
+		p.pos[i] = at
+	}
+	actual, _ := structPlans.LoadOrStore(t, p)
+	return actual.(*structPlan) //nolint:forcetypeassert // only *structPlan is stored
+}
+
+// find returns the field a map key with name key selects, as elpstag.Find
+// does, and whether the key is spelled exactly as the field's name.
+func (p *structPlan) find(key string) (int, bool) {
+	name := strings.TrimPrefix(key, ":")
+	if i, ok := p.exact[name]; ok {
+		return i, true
+	}
+	// elpstag.Find matches with strings.EqualFold. ASCII lower case gives
+	// the same answer only when the key and every field name are ASCII:
+	// for example "ſ" (U+017F) folds to "s".
+	if p.fold == nil || !isASCII(name) {
+		return elpstag.Find(p.fields, key)
+	}
+	var buf [64]byte
+	if len(name) > len(buf) {
+		return elpstag.Find(p.fields, key)
+	}
+	lower := buf[:len(name)]
+	for i := range len(name) {
+		c := name[i]
+		if 'A' <= c && c <= 'Z' {
+			c += 'a' - 'A'
+		}
+		lower[i] = c
+	}
+	if i, ok := p.fold[string(lower)]; ok {
+		return i, false
+	}
+	return -1, false
+}
+
+// keysInNameOrder reports whether m's keys all have a name that needs no
+// allocation (a string, symbol or bool) and are already in the order
+// namedKeys returns.
+func keysInNameOrder(m Value) bool {
+	prev := ""
+	for j, k := range m.keys {
+		if k.kind != String && k.kind != Symbol && k.kind != Bool {
+			return false
+		}
+		name := keyName(k)
+		if j > 0 && name < prev {
+			return false
+		}
+		prev = name
+	}
+	return true
+}
+
+func isASCII(s string) bool {
+	for i := range len(s) {
+		if s[i] >= 0x80 {
+			return false
+		}
+	}
+	return true
 }
