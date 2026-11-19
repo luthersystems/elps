@@ -498,8 +498,7 @@ func parseShortCanonicalInt(text string) (int64, bool) {
 		return 0, false
 	}
 	var n int64
-	for i := 0; i < len(digits); i++ {
-		c := digits[i]
+	for _, c := range []byte(digits) {
 		if c < '0' || c > '9' {
 			return 0, false
 		}

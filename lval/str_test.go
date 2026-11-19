@@ -83,17 +83,29 @@ func strByReencode(d *decoder) (string, error) {
 // and the spellings it does not, raw characters it escapes, surrogates,
 // and invalid UTF-8 next to other faults.
 var strSeeds = []string{
-	`""`, `"abc"`, `"~$x"`, `"héllo ☃ 𝄞"`,
+	`""`, `"abc"`, `"~$x"`, jsonQuote("h" + runeText(0xe9) + "llo " + runeText(0x2603) + " " + runeText(0x1d11e)),
 	`"\""`, `"\\"`, `"\/"`, `"/"`, `"\n\r\t\b\f"`,
-	`"\u000a"`, `"\u0008"`, `"\u0000"`, `"\u001f"`, `"\u001F"`, `"A"`,
-	`"<>&"`, `"<"`, `"<"`, `">"`, `"&"`,
-	"\" \"", "\" \"", `"  "`, `"‪"`, `"é"`,
-	`"𝄞"`, `"\ud834"`, `"\ud834x"`, `"\ud834A"`, `"\udd1e\ud834"`,
+	jsonQuote(uEsc("000a")), jsonQuote(uEsc("0008")), jsonQuote(uEsc("0000")), jsonQuote(uEsc("001f")), jsonQuote(uEsc("001F")), jsonQuote(uEsc("0041")),
+	jsonQuote(uEsc("003c") + uEsc("003e") + uEsc("0026")), jsonQuote(uEsc("003C")), `"<"`, `">"`, `"&"`,
+	jsonQuote(runeText(0x2028)), jsonQuote(runeText(0x2029)), jsonQuote(uEsc("2028") + uEsc("2029")), jsonQuote(uEsc("202a")), jsonQuote(uEsc("00e9")),
+	jsonQuote(uEsc("d834") + uEsc("dd1e")), jsonQuote(uEsc("D834") + uEsc("DD1E")), jsonQuote(uEsc("d834")), jsonQuote(uEsc("d834") + "x"),
+	jsonQuote(uEsc("d834") + uEsc("0041")), jsonQuote(uEsc("dd1e") + uEsc("d834")),
 	"\"\x01\"", "\"\x7f\"", "\"a\x00b\"",
 	"\"\xff\"", "\"\xc3\"", "\"\xe2\x80\"", "\"\xff\\/\"", "\"\xff<\"", "\"\xed\xa0\x80\"",
-	`"\x"`, `"\u12"`, `"\uzzzz"`, `"abc`, `"\`, `"a\"`, `"\ud834\u12"`,
-	`"a\nb<c"`, `"\u000a"`, "\"�\"", `"�"`,
+	`"\x"`, jsonQuote(uEsc("12")), jsonQuote(uEsc("zzzz")), `"abc`, `"\`, `"a\"`, jsonQuote(uEsc("d834") + uEsc("12")),
+	`"a\nb<c"`, jsonQuote(runeText(0xfffd)), jsonQuote(uEsc("fffd")),
 }
+
+// uEsc returns the JSON escape of four hex digits, built at run time so
+// that no tool on the way to this file reads it as an escape of its own.
+func uEsc(hex string) string { return "\\" + "u" + hex }
+
+// runeText returns the rune as text, so that the source holds no raw non-ASCII
+// character (gosec G116 refuses bidirectional and separator runes).
+func runeText(c rune) string { return string(c) }
+
+// jsonQuote quotes s as a JSON string with no escaping of its own.
+func jsonQuote(s string) string { return `"` + s + `"` }
 
 func checkStrMatchesReencode(t *testing.T, in []byte) {
 	got := decoder{b: in}
