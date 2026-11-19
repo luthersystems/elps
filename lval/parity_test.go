@@ -117,8 +117,9 @@ func TestEncodeMatchesLisp(t *testing.T) {
 }
 
 // FuzzUnmarshal: Unmarshal accepts every input libjson.LoadTyped accepts,
-// and both sides write it back as the same bytes. Unmarshal does not check
-// that its input is canonical, so it may accept an input LoadTyped refuses.
+// and both sides write it back as the same bytes. Unmarshal checks numbers,
+// strings and tags as LoadTyped does, but not the rest of the layout, such
+// as whitespace, so it may accept an input LoadTyped refuses.
 func FuzzUnmarshal(f *testing.F) {
 	for _, v := range samples() {
 		b, err := lval.Marshal(v)
@@ -532,6 +533,52 @@ func TestMapKeyTagsMatchLibjson(t *testing.T) {
 		want, _ := libjson.DumpTyped(lv)
 		if string(b) != string(want) {
 			t.Errorf("%s: Marshal wrote %s, DumpTyped writes %s", in, b, want)
+		}
+	}
+}
+
+// TestValueTagsMatchLibjson: Unmarshal accepts a tagged string or a number
+// in value position exactly when libjson.LoadTyped does, and Marshal writes
+// back the bytes it read.  lval used to read "~", a small "~n" int,
+// non-canonical base64 and a "~d" that is not DumpTyped's text, so one value
+// had two spellings (luthersystems/elps#983).
+func TestValueTagsMatchLibjson(t *testing.T) {
+	var vals []string
+	for _, s := range []string{
+		"", "a", "~", "~~", "~~a", "~:a", "~:", "~$a", "~$", "~$:a", "~$true", "~x",
+		"~bAA==", "~bAA", "~bAB==", "~b", "~b!!",
+		"~n1", "~n-5", "~n9007199254740992", "~n9007199254740993", "~n-9007199254740993",
+		"~n09007199254740993", "~n+9007199254740993", "~n", "~nx",
+		"~d1", "~d0", "~d-0", "~d1.0", "~d1.5", "~d01", "~d1e21", "~d1e+21", "~d100", "~d", "~dNaN", "~dInf",
+		"~zNaN", "~zINF", "~z-INF", "~znan", "~z",
+	} {
+		vals = append(vals, `"`+s+`"`)
+	}
+	// Escapes: only what Marshal writes.  "\u007e" spells a tag with an
+	// escape.
+	vals = append(vals, `"\u0041"`, `"\/"`, `"\u007en9007199254740993"`, `"~b\u0041A=="`,
+		`"<"`, `"\u003c"`, `"\u003C"`, `"\n"`, `"\u000a"`, `"\u0001"`, "\"\x01\"", `"\ud83d\ude00"`, "\"\U0001F600\"",
+		`"\u2028"`, "\"\u2028\"", `"\""`, `"\\"`)
+	vals = append(vals, "0", "-0", "01", "1", "-1", "+1", "1.5", "1.0", "1e2", "1.5e0", "1.5E0",
+		"9007199254740992", "9007199254740993", "0.1", "1e-7", "1e-07")
+	for _, val := range vals {
+		in := "[" + val + "]"
+		_, lerr := libjson.LoadTyped([]byte(in))
+		v, err := lval.Unmarshal([]byte(in))
+		if (err == nil) != (lerr == nil) {
+			t.Errorf("%s: Unmarshal: %v, LoadTyped: %v", in, err, lerr)
+			continue
+		}
+		if err != nil {
+			continue
+		}
+		b, err := lval.Marshal(v)
+		if err != nil {
+			t.Errorf("%s: Marshal: %v", in, err)
+			continue
+		}
+		if string(b) != in {
+			t.Errorf("%s: Marshal wrote %s", in, b)
 		}
 	}
 }
