@@ -263,9 +263,12 @@ func appendString(b []byte, s string) ([]byte, error) {
 }
 
 // Unmarshal reads typed JSON into a Value. It accepts every input
-// libjson.LoadTyped accepts, and reads it as the same value. It does not
-// check that the input is canonical, so it also accepts some inputs
-// LoadTyped refuses, such as a number with a leading zero.
+// libjson.LoadTyped accepts, and reads it as the same value. Like
+// LoadTyped, it refuses a number, a string or a tag that is not the text
+// Marshal writes for its value, such as a number with a leading zero, an
+// escape Marshal does not write, or a "~n" int that fits a JSON number. It
+// does not check the rest of the layout, such as whitespace, so it still
+// accepts some inputs LoadTyped refuses.
 func Unmarshal(data []byte) (Value, error) {
 	d := decoder{b: data}
 	d.ws()
@@ -282,7 +285,9 @@ func Unmarshal(data []byte) (Value, error) {
 
 type decoder struct {
 	b []byte
-	i int
+	// enc is a buffer str reuses to write a decoded string back.
+	enc []byte
+	i   int
 }
 
 func (d *decoder) errorf(msg string) error {
@@ -340,8 +345,11 @@ func (d *decoder) value(depth int) (Value, error) {
 
 // tilde reads a string value's Transit prefix.
 func tilde(s string, d *decoder) (Value, error) {
-	if len(s) < 2 || s[0] != '~' {
+	if s == "" || s[0] != '~' {
 		return MakeString(s), nil
+	}
+	if len(s) < 2 {
+		return Value{}, d.errorf("invalid tagged string")
 	}
 	rest := s[2:]
 	switch s[1] {
@@ -367,17 +375,30 @@ func tilde(s string, d *decoder) (Value, error) {
 		if err != nil {
 			return Value{}, d.errorf("bad base64")
 		}
+		// As libjson: only the text Marshal writes, so the bytes in are
+		// the bytes out (luthersystems/elps#983).
+		if base64.StdEncoding.EncodeToString(b) != rest {
+			return Value{}, d.errorf("non-canonical base64")
+		}
 		return MakeBytes(b), nil
 	case 'n':
-		n, err := strconv.ParseInt(rest, 10, 64)
-		if err != nil {
+		n, form := parseInt(rest)
+		if form == notInt {
 			return Value{}, d.errorf("bad integer")
+		}
+		if form != canonicalInt {
+			return Value{}, d.errorf("non-canonical int")
+		}
+		// An int up to 2^53 in size is a JSON number, never "~n".
+		if n >= -maxExactInt && n <= maxExactInt {
+			return Value{}, d.errorf("non-canonical int")
 		}
 		return MakeInt(n), nil
 	case 'd':
 		f, err := strconv.ParseFloat(rest, 64)
-		if err != nil {
-			return Value{}, d.errorf("bad float")
+		if err != nil || math.IsInf(f, 0) || math.IsNaN(f) || math.Trunc(f) != f ||
+			string(appendJSONFloat(nil, f)) != rest {
+			return Value{}, d.errorf("non-canonical whole float")
 		}
 		return MakeFloat(f), nil
 	case 'z':
@@ -406,10 +427,15 @@ func (d *decoder) number() (Value, error) {
 		d.i++
 	}
 	text := string(d.b[start:d.i])
+	// As libjson: only the text Marshal writes for the value, so one value
+	// has one spelling (luthersystems/elps#983).
 	if !isFloat {
-		n, err := strconv.ParseInt(text, 10, 64)
-		if err != nil {
+		n, form := parseInt(text)
+		if form == notInt {
 			return Value{}, d.errorf("bad number")
+		}
+		if form != canonicalInt || n < -maxExactInt || n > maxExactInt {
+			return Value{}, d.errorf("non-canonical number")
 		}
 		return MakeInt(n), nil
 	}
@@ -417,7 +443,42 @@ func (d *decoder) number() (Value, error) {
 	if err != nil {
 		return Value{}, d.errorf("bad number")
 	}
+	if math.IsInf(f, 0) {
+		return Value{}, d.errorf("non-canonical number")
+	}
+	if math.Trunc(f) == f {
+		return Value{}, d.errorf("whole float requires ~d")
+	}
+	if string(appendJSONFloat(nil, f)) != text {
+		return Value{}, d.errorf("non-canonical number")
+	}
 	return MakeFloat(f), nil
+}
+
+// intText is what parseInt found in decimal text.
+type intText int
+
+const (
+	// notInt: the text is not an int64.
+	notInt intText = iota
+	// nonCanonicalInt: an int64, but not strconv.FormatInt's text for it.
+	nonCanonicalInt
+	// canonicalInt: exactly strconv.FormatInt of the int: no sign but '-',
+	// no leading zero, no "-0".
+	canonicalInt
+)
+
+// parseInt parses decimal text as an int64.  Int values, "~n" values and
+// "~i" keys all use it, so they keep one rule.
+func parseInt(text string) (int64, intText) {
+	n, err := strconv.ParseInt(text, 10, 64)
+	if err != nil {
+		return 0, notInt
+	}
+	if strconv.FormatInt(n, 10) != text {
+		return n, nonCanonicalInt
+	}
+	return n, canonicalInt
 }
 
 func (d *decoder) elems(depth int) ([]Value, error) {
@@ -640,8 +701,8 @@ func mapKey(s string, d *decoder) (Value, error) {
 		case 'i':
 			// Only canonical digits, as libjson: "~i007" and "~i+5"
 			// would otherwise be a second spelling of one key.
-			n, err := strconv.ParseInt(s[2:], 10, 64)
-			if err != nil || strconv.FormatInt(n, 10) != s[2:] {
+			n, form := parseInt(s[2:])
+			if form != canonicalInt {
 				return Value{}, d.errorf("bad int key")
 			}
 			return MakeInt(n), nil
@@ -661,6 +722,7 @@ func mapKey(s string, d *decoder) (Value, error) {
 
 // str reads a JSON string.
 func (d *decoder) str() (string, error) {
+	start := d.i
 	d.i++ // "
 	var out []byte
 	for {
@@ -671,6 +733,17 @@ func (d *decoder) str() (string, error) {
 		switch c {
 		case '"':
 			d.i++
+			// As libjson: only the text Marshal writes for the string, so
+			// one string has one spelling, with no other escape and no raw
+			// control or HTML character (luthersystems/elps#983).
+			enc, err := appendString(d.enc[:0], string(out))
+			if err != nil {
+				return "", d.errorf("string is not valid UTF-8")
+			}
+			d.enc = enc
+			if string(enc) != string(d.b[start:d.i]) {
+				return "", d.errorf("non-canonical string")
+			}
 			return string(out), nil
 		case '\\':
 			if d.i+1 >= len(d.b) {
