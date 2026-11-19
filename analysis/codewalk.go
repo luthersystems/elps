@@ -168,9 +168,10 @@ func (r *sourceResolver) form(node *lisp.LVal, op string, depth int) bool {
 		return false
 	}
 	if r.a.bindingForm(node) != nil {
-		// Explicit application grammar wins. A name-based guess is only a
-		// fallback when the expander cannot describe the call's actual code.
-		if _, custom := customDefLikeMatch(node, r.a.cfg); custom || r.a.expand(node, r.scope, r.pkg) == nil {
+		// Explicit application grammar wins. A name-based guess, by the
+		// heuristic or an Inferred spec, is only a fallback when the
+		// expander cannot describe the call's actual code.
+		if explicitDefLikeMatch(node, r.a.cfg) || r.a.expand(node, r.scope, r.pkg) == nil {
 			return true
 		}
 	}

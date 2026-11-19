@@ -428,6 +428,24 @@ func customDefLikeMatch(node *lisp.LVal, cfg *Config) (defLikeSpec, bool) {
 	return defLikeSpec{}, false
 }
 
+// explicitDefLikeMatch reports whether node matches a spec of
+// Config.DefForms that is not Inferred. Such a spec is the embedder's
+// grammar, so it takes priority over the macro expander. An inferred spec
+// does not: it is only a guess from the macro's name, and the expansion
+// says what the call really defines (luthersystems/elps#984).
+func explicitDefLikeMatch(node *lisp.LVal, cfg *Config) bool {
+	if node == nil || node.Type != lisp.LSExpr || node.IsQuoted() || len(node.Cells) == 0 || cfg == nil {
+		return false
+	}
+	head := astutil.HeadSymbol(node)
+	for _, spec := range cfg.DefForms {
+		if !spec.Inferred && spec.Head != "" && spec.Head == head && validDefFormSpec(node, spec) {
+			return true
+		}
+	}
+	return false
+}
+
 func validDefFormSpec(node *lisp.LVal, spec DefFormSpec) bool {
 	if spec.FormalsIndex <= 0 || spec.FormalsIndex >= len(node.Cells)-1 {
 		return false

@@ -170,3 +170,40 @@ func namesOf(syms []ExternalSymbol, names ...string) []string {
 	}
 	return out
 }
+
+// TestWithGeneratedDefinitions_InferredDefForm checks that a call of a
+// workspace macro whose name starts with "def" gives its definition to
+// the tables, with the DefForms the workspace infers in the config, as
+// the lint command and the editor pass them (luthersystems/elps#984).
+// Before, the inferred spec stopped the expansion of the call, so the
+// definition had no GeneratedBy and was dropped.
+func TestWithGeneratedDefinitions_InferredDefForm(t *testing.T) {
+	scan, cfg, _ := generatedWorkspace(t, map[string]string{
+		"main.lisp": "(in-package 'repro)\n" +
+			"(defmacro defun-traced (name formals &rest body)\n" +
+			"  (quasiquote (defun (unquote name) (unquote formals) (unquote-splicing body))))\n" +
+			"(defun-traced macro-fn (x) (+ x 1))\n",
+		"other.lisp": "(in-package 'repro)\n(macro-fn 1)\n",
+	})
+	cfg.DefForms = scan.Prescan().DefForms
+	require.NotEmpty(t, cfg.DefForms, "the workspace infers a spec for defun-traced")
+
+	gen, changed := scan.WithGeneratedDefinitions(cfg, nil, nil)
+	require.True(t, changed)
+	assert.Equal(t, []string{"macro-fn"}, namesOf(gen.Prescan().PkgAllSymbols["repro"], "macro-fn"))
+}
+
+// TestExplicitDefFormWinsOverExpansion checks that a DefFormSpec an
+// embedder supplies still takes priority over the expander: it is the
+// embedder's grammar, not a guess by name (luthersystems/elps#984).
+func TestExplicitDefFormWinsOverExpansion(t *testing.T) {
+	scan, cfg, _ := generatedWorkspace(t, map[string]string{
+		"main.lisp": "(in-package 'repro)\n" +
+			"(defmacro defun-traced (name formals &rest body)\n" +
+			"  (quasiquote (defun (unquote name) (unquote formals) (unquote-splicing body))))\n" +
+			"(defun-traced macro-fn (x) (+ x 1))\n",
+	})
+	cfg.DefForms = []DefFormSpec{{Head: "defun-traced", FormalsIndex: 2, BindsName: true, NameIndex: 1, NameKind: SymFunction}}
+	_, changed := scan.WithGeneratedDefinitions(cfg, nil, nil)
+	assert.False(t, changed, "an explicit spec is not expanded, so the call generates nothing")
+}

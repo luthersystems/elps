@@ -71,7 +71,8 @@ type Config struct {
 	// a macro generates are forward-referenceable, and each such definition
 	// records its macro call in Symbol.GeneratedBy (see
 	// Result.GeneratedDefinitions). With an expander, a def-prefixed call is
-	// expanded rather than guessed at by name; DefForms still take priority.
+	// expanded rather than guessed at by name; DefForms that are not
+	// Inferred still take priority.
 	MacroExpander MacroExpander
 
 	// SyntaxExpander, used only when MacroExpander is nil, expands the
@@ -105,6 +106,16 @@ type DefFormSpec struct {
 	BindsName    bool
 	NameIndex    int
 	NameKind     SymbolKind
+	// Inferred marks a spec the workspace scan guessed from a macro's name
+	// (WorkspacePrescan.DefForms), not one an embedder wrote. With a
+	// MacroExpander, the analysis expands a call of an inferred head and
+	// uses the spec only when the call does not expand. The expansion is
+	// the real code: the guess cannot know what the macro defines, and a
+	// call that is not expanded gives no generated definition, so its
+	// name would resolve only in its own file (luthersystems/elps#984).
+	// A spec that is not inferred still wins over the expander: it is the
+	// embedder's grammar.
+	Inferred bool
 }
 
 // ExternalSymbol represents a symbol defined in another file.

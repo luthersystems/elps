@@ -58,3 +58,35 @@ func TestLintCommand_WorkspaceMacroDefinitionsAcrossFiles(t *testing.T) {
 	assert.Contains(t, string(out), "undefined symbol: not-defined-anywhere")
 	assert.NotContains(t, string(out), "undefined symbol: foo", "foo, which app.lisp defines with a macro call, resolves in other.lisp")
 }
+
+// TestLintCommand_DefMacroDefinitionsAcrossFiles checks that a function a
+// call of a workspace macro whose name starts with "def" defines resolves
+// in the other files (luthersystems/elps#984). The workspace infers a
+// DefFormSpec for such a macro by its name. Before, that spec stopped the
+// expansion of the call, so the definition never reached the workspace
+// tables and resolved only in the file of the call.
+func TestLintCommand_DefMacroDefinitionsAcrossFiles(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+	bin := buildTestBinary(t)
+	root := t.TempDir()
+	for name, src := range map[string]string{
+		"main.lisp": "(in-package 'repro)\n" +
+			"(defmacro defun-traced (name formals &rest body)\n" +
+			"  (quasiquote (defun (unquote name) (unquote formals)\n" +
+			"    (unquote (format-string \"@trace{{ {} }}\" name))\n" +
+			"    (unquote-splicing body))))\n" +
+			"(defun-traced macro-fn (x) (+ x 1))\n" +
+			"(macro-fn 1)\n",
+		"other.lisp": "(in-package 'repro)\n(macro-fn 2)\n(not-defined-anywhere)\n",
+	} {
+		require.NoError(t, os.WriteFile(filepath.Join(root, name), []byte(src), 0o600))
+	}
+
+	cmd := exec.CommandContext(t.Context(), bin, "lint", "--workspace=.", "main.lisp", "other.lisp") //nolint:gosec // test executes freshly built local binary
+	cmd.Dir = root
+	out, _ := cmd.CombinedOutput()
+	assert.Contains(t, string(out), "undefined symbol: not-defined-anywhere")
+	assert.NotContains(t, string(out), "undefined symbol: macro-fn", "macro-fn, which main.lisp defines with a def* macro call, resolves in other.lisp")
+}

@@ -1946,6 +1946,9 @@ func extractDefFormSpecs(defs []ExternalSymbol) []DefFormSpec {
 			BindsName:    true,
 			NameIndex:    1,
 			NameKind:     SymFunction,
+			// A guess by name: an expansion of the call, when there is
+			// one, is used instead (luthersystems/elps#984).
+			Inferred: true,
 		})
 	}
 	return specs

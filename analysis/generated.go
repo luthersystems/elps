@@ -232,7 +232,11 @@ func (a *analyzer) expandPackageForms(forms []*lisp.LVal, scope *Scope, pkg stri
 		}
 		var expanded *lisp.LVal
 		if head != "" && !isPackageFormHead(head) {
-			if _, custom := customDefLikeMatch(form, a.cfg); !custom {
+			// An inferred spec does not stop the expansion: the
+			// definitions of the expansion carry GeneratedBy, which
+			// WithGeneratedDefinitions needs to give them to the other
+			// files (luthersystems/elps#984).
+			if !explicitDefLikeMatch(form, a.cfg) {
 				expanded = a.expand(form, scope, pkg)
 			}
 		}

@@ -2512,8 +2512,12 @@ other := analysis.AnalyzeFile(otherSrc, "report.lisp", &analysis.Config{ExtraGlo
 ```
 
 With an expander, a call whose head starts with `def` is analyzed through its
-expansion instead of the name-based guess; `Config.DefForms` entries still
-take priority. When expansion fails (the macro is not loaded in the env, or
+expansion instead of the name-based guess; `Config.DefForms` entries that an
+embedder writes still take priority. An entry with `Inferred` set, which the
+workspace scan makes for each workspace macro whose name starts with `def`
+(`WorkspacePrescan.DefForms`), is only a guess: the call is expanded, so its
+definitions carry `GeneratedBy` and reach the other files of the workspace
+(luthersystems/elps#984). When expansion fails (the macro is not loaded in the env, or
 it signals), the analyzer falls back to that name-based guess, and a name it
 guesses has `GeneratedBy` nil. Each call site is expanded at most once per
 analysis.
