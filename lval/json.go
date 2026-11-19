@@ -285,9 +285,7 @@ func Unmarshal(data []byte) (Value, error) {
 
 type decoder struct {
 	b []byte
-	// enc is a buffer str reuses to write a decoded string back.
-	enc []byte
-	i   int
+	i int
 }
 
 func (d *decoder) errorf(msg string) error {
@@ -471,6 +469,12 @@ const (
 // parseInt parses decimal text as an int64.  Int values, "~n" values and
 // "~i" keys all use it, so they keep one rule.
 func parseInt(text string) (int64, intText) {
+	// Fast path, one pass: up to 18 digits in canonical form cannot
+	// overflow an int64, so they need neither strconv.ParseInt nor a
+	// strconv.FormatInt round trip to compare (luthersystems/elps#987).
+	if n, ok := parseShortCanonicalInt(text); ok {
+		return n, canonicalInt
+	}
 	n, err := strconv.ParseInt(text, 10, 64)
 	if err != nil {
 		return 0, notInt
@@ -479,6 +483,32 @@ func parseInt(text string) (int64, intText) {
 		return n, nonCanonicalInt
 	}
 	return n, canonicalInt
+}
+
+// parseShortCanonicalInt parses text if it is strconv.FormatInt's text
+// for an int of at most 18 digits: an optional '-', then "0" or digits
+// without a leading zero, and not "-0".  Otherwise it reports false and
+// parseInt decides.
+func parseShortCanonicalInt(text string) (int64, bool) {
+	digits := text
+	if digits != "" && digits[0] == '-' {
+		digits = digits[1:]
+	}
+	if digits == "" || len(digits) > 18 || (digits[0] == '0' && len(text) > 1) {
+		return 0, false
+	}
+	var n int64
+	for i := 0; i < len(digits); i++ {
+		c := digits[i]
+		if c < '0' || c > '9' {
+			return 0, false
+		}
+		n = n*10 + int64(c-'0')
+	}
+	if len(digits) < len(text) {
+		n = -n
+	}
+	return n, true
 }
 
 func (d *decoder) elems(depth int) ([]Value, error) {
@@ -679,12 +709,36 @@ func (d *decoder) object(depth int) (Value, error) {
 		vals = append(vals, v)
 		d.ws()
 		if d.lit("}") {
+			if sortedStringKeys(keys) {
+				// Marshal writes a map's members in key order, so the
+				// keys of a struct or a string-keyed map usually arrive
+				// sorted and distinct: they are the map as it is, and
+				// buildMap's sort and duplicate check would find nothing
+				// to do (luthersystems/elps#987).  Clip the slices as
+				// buildMap's are, so that Set on a copy of the map grows
+				// a new array instead of writing into a shared one.
+				return Value{kind: Map, keys: keys[:len(keys):len(keys)], items: vals[:len(vals):len(vals)]}, nil
+			}
 			return buildMap(keys, vals), nil
 		}
 		if !d.lit(",") {
 			return Value{}, d.errorf("expected , or }")
 		}
 	}
+}
+
+// sortedStringKeys reports whether keys are all strings in strictly
+// increasing order.  Then they are what buildMap would make of them: two
+// distinct strings are two ELPS keys, and strings sort by keyText as they
+// sort by their own text, since keyText only puts one more '~' before a
+// string that starts with '~', and no other string starts with '~'.
+func sortedStringKeys(keys []Value) bool {
+	for i, k := range keys {
+		if k.kind != String || (i > 0 && keys[i-1].str >= k.str) {
+			return false
+		}
+	}
+	return true
 }
 
 // mapKey reads a typed JSON member name.  It accepts the key tags that
@@ -721,38 +775,56 @@ func mapKey(s string, d *decoder) (Value, error) {
 }
 
 // str reads a JSON string.
+//
+// As libjson, it accepts only the text Marshal writes for the string, so
+// one string has one spelling, with no other escape and no raw control or
+// HTML character (luthersystems/elps#983).  It checks that in the one pass
+// that reads the string, instead of writing the string again and
+// comparing: a WebAssembly guest pays for every instruction, and the
+// second pass made each typed call cost about 13% more
+// (luthersystems/elps#987).  A string without an escape, as most are, is
+// one copy of the input.
 func (d *decoder) str() (string, error) {
-	start := d.i
 	d.i++ // "
+	// out holds the decoded text before seg once a string has an escape;
+	// until then the text is d.b[start:d.i].
+	start, seg := d.i, d.i
 	var out []byte
+	badUTF8, nonCanonical := false, false
 	for {
 		if d.i >= len(d.b) {
 			return "", d.errorf("unterminated string")
 		}
 		c := d.b[d.i]
-		switch c {
-		case '"':
+		switch {
+		case c == '"':
+			text := d.b[seg:d.i]
 			d.i++
-			// As libjson: only the text Marshal writes for the string, so
-			// one string has one spelling, with no other escape and no raw
-			// control or HTML character (luthersystems/elps#983).
-			enc, err := appendString(d.enc[:0], string(out))
-			if err != nil {
+			// The UTF-8 error first, as when the check wrote the string
+			// again: that write failed before any comparison.
+			if badUTF8 {
 				return "", d.errorf("string is not valid UTF-8")
 			}
-			d.enc = enc
-			if string(enc) != string(d.b[start:d.i]) {
+			if nonCanonical {
 				return "", d.errorf("non-canonical string")
 			}
-			return string(out), nil
-		case '\\':
+			if out == nil {
+				return string(d.b[start : d.i-1]), nil
+			}
+			return string(append(out, text...)), nil
+		case c == '\\':
 			if d.i+1 >= len(d.b) {
 				return "", d.errorf("bad escape")
 			}
+			out = append(out, d.b[seg:d.i]...)
 			e := d.b[d.i+1]
 			d.i += 2
 			switch e {
-			case '"', '\\', '/':
+			case '"', '\\':
+				out = append(out, e)
+			case '/':
+				// Marshal writes '/' as it is.
+				nonCanonical = true
 				out = append(out, e)
 			case 'b':
 				out = append(out, '\b')
@@ -765,11 +837,15 @@ func (d *decoder) str() (string, error) {
 			case 't':
 				out = append(out, '\t')
 			case 'u':
+				hex := d.i
 				r, ok := d.hex4()
 				if !ok {
 					return "", d.errorf("bad \\u escape")
 				}
 				if utf16.IsSurrogate(r) {
+					// Marshal writes a rune past the BMP as UTF-8, so a
+					// surrogate escape is never its text.
+					nonCanonical = true
 					if !d.lit(`\u`) {
 						return "", d.errorf("lone surrogate")
 					}
@@ -778,16 +854,49 @@ func (d *decoder) str() (string, error) {
 						return "", d.errorf("bad \\u escape")
 					}
 					r = utf16.DecodeRune(r, r2)
+				} else if !isCanonicalUEscape(r, d.b[hex:hex+4]) {
+					nonCanonical = true
 				}
 				out = utf8.AppendRune(out, r)
 			default:
 				return "", d.errorf("bad escape")
 			}
-		default:
-			out = append(out, c)
+			seg = d.i
+		case c < 0x20 || c == '<' || c == '>' || c == '&':
+			// Marshal escapes these.
+			nonCanonical = true
 			d.i++
+		case c < utf8.RuneSelf:
+			d.i++
+		default:
+			r, size := utf8.DecodeRune(d.b[d.i:])
+			switch {
+			case r == utf8.RuneError && size == 1:
+				badUTF8 = true
+			case r == 0x2028 || r == 0x2029:
+				// Marshal escapes these.
+				nonCanonical = true
+			}
+			d.i += size
 		}
 	}
+}
+
+// isCanonicalUEscape reports whether hex, the four digits of a \u escape
+// of r (not a surrogate), is the escape appendString writes for r.
+func isCanonicalUEscape(r rune, hex []byte) bool {
+	switch {
+	case r == '\b', r == '\f', r == '\n', r == '\r', r == '\t':
+		// appendString writes the short escape.
+		return false
+	case r < 0x20, r == '<', r == '>', r == '&', r == 0x2028, r == 0x2029:
+	default:
+		// appendString writes the rune as it is.
+		return false
+	}
+	const digits = "0123456789abcdef"
+	return hex[0] == digits[r>>12&0xF] && hex[1] == digits[r>>8&0xF] &&
+		hex[2] == digits[r>>4&0xF] && hex[3] == digits[r&0xF]
 }
 
 func (d *decoder) hex4() (rune, bool) {
