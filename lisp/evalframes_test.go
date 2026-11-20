@@ -22,7 +22,8 @@ import (
 // the number of frames per level.  Returning terminal marks to the frame
 // that made the call (beginTerminal), and calling funCallFrame and eval
 // directly from evalSExpr and evalSExprCells, cut these counts from 14, 18
-// and 14 (elps v1.100.2) to 10, 15 and 10.  A change that puts a wrapper
+// and 14 (elps v1.100.2) to 10, 15 and 10.  Spelling out evalSExpr in eval
+// and callBuiltin in call cut them to 7, 11 and 7.  A change that puts a wrapper
 // frame back on one of these paths fails here.  If a change has to add a
 // frame, update the count and say why in the commit.
 //
@@ -39,11 +40,11 @@ func TestEvalGoFramesPerLevel(t *testing.T) {
 	}{
 		// A call in a call's argument, under if: one lambda call, one
 		// special operator and one nested argument per level.
-		{"argument", `(defun probe (n) (if (<= n 0) (go-frames) (+ 0 (probe (- n 1)))))`, 10},
+		{"argument", `(defun probe (n) (if (<= n 0) (go-frames) (+ 0 (probe (- n 1)))))`, 7},
 		// A call in a let binding's value, under if.
-		{"let-binding", `(defun probe (n) (if (<= n 0) (go-frames) (let ((x (probe (- n 1)))) x)))`, 15},
+		{"let-binding", `(defun probe (n) (if (<= n 0) (go-frames) (let ((x (probe (- n 1)))) x)))`, 11},
 		// A call in a call's argument, in a cond clause.
-		{"cond", `(defun probe (n) (cond ((<= n 0) (go-frames)) (:else (+ 0 (probe (- n 1))))))`, 10},
+		{"cond", `(defun probe (n) (cond ((<= n 0) (go-frames)) (:else (+ 0 (probe (- n 1))))))`, 7},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

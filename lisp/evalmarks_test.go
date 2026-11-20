@@ -20,7 +20,7 @@ func loadMarkTest(t *testing.T, env *lisp.LEnv, src string) *lisp.LVal {
 }
 
 // A terminal mark that a builtin returns goes back to its Runtime once
-// callBuiltin has read it, holding nothing, and the next mark uses it.  The
+// call has read it, holding nothing, and the next mark uses it.  The
 // elpscheck build keeps no mark.
 func TestTerminalMarkIsReused(t *testing.T) {
 	env := newCallSemanticsEnv(t)

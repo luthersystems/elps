@@ -2015,7 +2015,43 @@ eval:
 	case LSymbol:
 		return env.evalSymbol(v)
 	case LSExpr:
-		res := env.evalSExpr(ctx, v)
+		// evalSExpr's code, written out so a call form costs no evalSExpr
+		// frame on the Go stack: one frame fewer per Lisp call level
+		// (lisp/evalcold.go).  Change the two together:
+		// TestEvalSExprMatchesEval compares their results.
+		var res *LVal
+		if len(v.Cells) == 0 {
+			res = Nil()
+		} else if call, back := env.evalSExprCells(ctx, v); call.IsError() {
+			res = call
+			if err := env.ErrorAssociate(call); err != nil {
+				res = err
+			}
+		} else {
+			fun := call.Cells[0] // call is not an empty expression -- fun is known LFun
+			args := call
+			args.Cells = call.Cells[1:] //elps:mutates decap of the call value evalSExprCells constructed just above with fresh backing
+			switch fun.FunType {
+			case LFunNone:
+				if env.Runtime.Profiler != nil {
+					res = env.funCallTraced(ctx, fun, args, true)
+				} else {
+					res = env.funCallFrame(ctx, fun, args, true)
+				}
+				if back != nil {
+					env.returnCallList(res, args, back)
+				}
+			case LFunSpecialOp:
+				res = env.specialOpCall(ctx, fun, args, true)
+				if back != nil {
+					env.returnCallList(res, args, back)
+				}
+			case LFunMacro:
+				res = env.macroCall(ctx, fun, args)
+			default:
+				res = env.errInvalidFunType(fun)
+			}
+		}
 		// Post-call check: after a function call returns, the stack
 		// frame has been popped and depth has decreased. If the debugger
 		// is stepping out, this is where we catch tail-position returns
@@ -2764,7 +2800,56 @@ func (env *LEnv) call(ctx context.Context, fun *LVal, args *LVal, owned bool) *L
 		fn = fd.builtin
 	}
 	if fn != nil {
-		return env.callBuiltin(ctx, fun, builtinCall{fd: fd, fn: fn, list: list})
+		// A builtin's call, written out here rather than in a function of
+		// its own: one frame fewer under every builtin, and so under the
+		// body of every let, flet and other special operator that evaluates
+		// its body with env.Eval (lisp/evalcold.go).
+		//
+		// Bridge ctx onto env so builtins that call env.Eval() pick it up.
+		// Save and restore to prevent stale ctx from leaking after the
+		// builtin returns.
+		prev := env.evalCtx
+		env.evalCtx = ctx
+		// A library builtin runs in its own package, like a Lisp function
+		// defined there (see the NOTE on the swap below).  The cheap tests
+		// come first: a call from the library's own code is already in its
+		// package, and core lisp never switches.  The package is looked up
+		// by name on every call, never cached: forks and templates replace
+		// registry entries.
+		outer := env.Runtime.Package
+		var switched bool
+		if pkg := fd.pkg; outer != nil && pkg != outer.Name && pkg != env.Runtime.Registry.Lang &&
+			fun.FunType != LFunSpecialOp {
+			if inner := env.Runtime.Registry.packages[pkg]; inner != nil {
+				env.Runtime.Package = inner
+				switched = true
+			}
+		}
+		// The deferred restore covers a panic out of the builtin; the
+		// explicit one below covers every return.  call has two defers
+		// (this one and the package restore for a Lisp function below) and
+		// seven returns, so both are open-coded; one more return or defer
+		// passes the compiler's limit (returns x defers <= 15) and every
+		// call would pay for a defer record.  Check with
+		// go build -gcflags=-d=defer.
+		defer func() {
+			env.evalCtx = prev
+			if switched {
+				env.Runtime.Package = outer
+			}
+		}()
+		val := fn(env, list)
+		if switched {
+			env.Runtime.Package = outer
+			switched = false
+		}
+		if val == nil {
+			return env.errReturnedNil("builtin", fun)
+		}
+		// A terminal mark goes back to the frame that made the call
+		// (funCallFrame, specialOpCall or macroCall), which evaluates its
+		// expression (beginTerminal).
+		return val
 	}
 
 	// With formal arguments bound, we can switch into the function's package
@@ -2820,69 +2905,6 @@ func (env *LEnv) call(ctx context.Context, fun *LVal, args *LVal, owned bool) *L
 	return fenv.eval(ctx, body[len(body)-1])
 }
 
-// builtinCall holds the builtin implementation and argument list.
-type builtinCall struct {
-	// fd contains builtin function data.
-	fd *funData
-	// fn is the builtin implementation.
-	fn LBuiltin
-	// list contains the bound arguments.
-	list *LVal
-}
-
-// callBuiltin is call's native branch: it invokes fn, fun's Go
-// implementation, with the bound argument list.  It is a function of its own
-// so that its few defers are open-coded; in call, whose many returns rule
-// that out, every builtin call paid for a heap-style defer record.
-func (env *LEnv) callBuiltin(ctx context.Context, fun *LVal, opts builtinCall) *LVal {
-	fd, fn, list := opts.fd, opts.fn, opts.list
-
-	// Bridge ctx onto env so builtins that call env.Eval() pick it up.
-	// Save and restore to prevent stale ctx from leaking after the
-	// builtin returns.
-	prev := env.evalCtx
-	env.evalCtx = ctx
-	// A library builtin runs in its own package, like a Lisp function
-	// defined there (see the NOTE on the swap in call).  The cheap tests
-	// come first: a call from the library's own code is already in its
-	// package, and core lisp never switches.  The package is looked up by
-	// name on every call, never cached: forks and templates replace
-	// registry entries.
-	outer := env.Runtime.Package
-	var switched bool
-	if pkg := fd.pkg; outer != nil && pkg != outer.Name && pkg != env.Runtime.Registry.Lang &&
-		fun.FunType != LFunSpecialOp {
-		if inner := env.Runtime.Registry.packages[pkg]; inner != nil {
-			env.Runtime.Package = inner
-			switched = true
-		}
-	}
-	// The deferred restore covers a panic out of the builtin; the explicit
-	// one below covers every return, before a terminal expression is
-	// evaluated in the caller's environment.
-	defer func() {
-		env.evalCtx = prev
-		if switched {
-			env.Runtime.Package = outer
-		}
-	}()
-	val := fn(env, list)
-	if switched {
-		env.Runtime.Package = outer
-		switched = false
-	}
-	if val == nil {
-		return env.errReturnedNil("builtin", fun)
-	}
-	// A terminal mark goes back to the frame that made the call
-	// (funCallFrame, specialOpCall or macroCall), which evaluates its
-	// expression (beginTerminal).  Evaluated here, the expression's whole
-	// evaluation would sit on the Go stack under this frame and call's: two
-	// more frames for every if, let, progn and cond in the program
-	// (lisp/evalcold.go).
-	return val
-}
-
 // terminalEval is the state of a terminal expression's evaluation between
 // beginTerminal and endTerminal.
 type terminalEval struct {
@@ -2893,7 +2915,7 @@ type terminalEval struct {
 }
 
 // beginTerminal prepares the evaluation of the terminal mark val that call
-// returned for ctx, as callBuiltin did before it returned the mark to its
+// returned for ctx, as call's builtin branch did before it returned the mark to its
 // caller: the top frame is marked terminal, and the caller's env and the
 // mark's environment both get ctx as their evaluation context.  The caller
 // evaluates t.expr in t.env with ctx and then calls endTerminal:
@@ -2911,7 +2933,7 @@ type terminalEval struct {
 // expression (lisp/evalcold.go).  beginTerminal returns before the
 // evaluation starts, so its own frame does not.
 //
-// The restore in endTerminal is not deferred, as callBuiltin's was: a
+// The restore in endTerminal is not deferred, as call's is: a
 // deferred restore here would need a frame under the evaluation.  eval
 // recovers every panic, so it returns normally.  The exceptions are an
 // ownership violation under the elpscheck build tag, which eval re-panics
@@ -2933,7 +2955,7 @@ func (env *LEnv) beginTerminal(ctx context.Context, val *LVal) (terminalEval, *L
 
 // endTerminal gives the mark's environment, then the caller's env, the
 // evaluation context each had before beginTerminal: the order of
-// callBuiltin's deferred restores.
+// call's deferred restores.
 func (env *LEnv) endTerminal(t terminalEval) {
 	t.env.evalCtx = t.prevTerm
 	env.evalCtx = t.prev

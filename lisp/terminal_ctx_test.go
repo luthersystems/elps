@@ -17,11 +17,11 @@ type terminalCtxKey struct{}
 // function) and macroCall (a Go macro) -- and checks the evaluation context
 // the terminal expression sees and the one each environment has afterwards.
 //
-// Why: callBuiltin used to evaluate the mark itself, under its deferred
-// restore of env's context.  It now returns the mark, and each of those
-// three callers evaluates it with beginTerminal and endTerminal, so that
-// call's and callBuiltin's frames are not on the Go stack under the
-// expression.  A caller that skips beginTerminal or endTerminal would show
+// Why: the builtin call (once callBuiltin, now call's builtin branch) used
+// to evaluate the mark itself, under its deferred restore of env's context.
+// It now returns the mark, and each of those three callers evaluates it with
+// beginTerminal and endTerminal, so that call's frame is not on the Go stack
+// under the expression.  A caller that skips beginTerminal or endTerminal would show
 // a stale context here.
 func TestTerminalMarkEvaluationContext(t *testing.T) {
 	env := initSafetyTestEnv(t)

@@ -15,7 +15,10 @@ import (
 // agrees with evalSExpr, which EvalSExpr reaches.  Each form is a call
 // form that is not a macro call (EvalSExpr returns a macro's expansion
 // mark, which eval then evaluates).  Both paths run each form twice, so
-// the second run takes a reused call list where the call allows one.
+// the second run takes a reused call list where the call allows one, and
+// again with a profiler set, so a regular function goes through
+// funCallTraced.  The test compares results only: it does not see call-list
+// reuse or a debugger hook.
 func TestEvalSExprMatchesEval(t *testing.T) {
 	const program = `
 (defun add (a b) (+ a b))
@@ -40,7 +43,7 @@ func TestEvalSExprMatchesEval(t *testing.T) {
 		`(add (fails) 2)`,
 		`()`,
 	}
-	newEnv := func(t *testing.T) *lisp.LEnv {
+	newEnv := func(t *testing.T, profiled bool) *lisp.LEnv {
 		t.Helper()
 		env := lisp.NewEnv(nil)
 		env.Runtime.Reader = parser.NewReader()
@@ -54,6 +57,9 @@ func TestEvalSExprMatchesEval(t *testing.T) {
 		if rc := env.LoadString("parity.lisp", program); rc.IsError() {
 			t.Fatal(rc)
 		}
+		if profiled {
+			env.Runtime.Profiler = countingProfiler{calls: new(int)}
+		}
 		return env
 	}
 	// An error's condition and data, without its location: eval sets the
@@ -64,23 +70,43 @@ func TestEvalSExprMatchesEval(t *testing.T) {
 		}
 		return v.String()
 	}
-	for _, src := range forms {
-		t.Run(src, func(t *testing.T) {
-			viaEval, viaSExpr := newEnv(t), newEnv(t)
-			for i := range 2 {
-				a, err := viaEval.Runtime.Reader.Read("form", strings.NewReader(src))
-				if err != nil {
-					t.Fatal(err)
-				}
-				b, err := viaSExpr.Runtime.Reader.Read("form", strings.NewReader(src))
-				if err != nil {
-					t.Fatal(err)
-				}
-				got, want := render(viaEval.Eval(a[0])), render(viaSExpr.EvalSExpr(b[0]))
-				if got != want {
-					t.Errorf("run %d: Eval gave %s, EvalSExpr gave %s", i, got, want)
-				}
+	for _, profiled := range []bool{false, true} {
+		for _, src := range forms {
+			name := src
+			if profiled {
+				name = "profiled " + src
 			}
-		})
+			t.Run(name, func(t *testing.T) {
+				checkEvalSExprParity(t, newEnv(t, profiled), newEnv(t, profiled), src, render)
+			})
+		}
+	}
+}
+
+// countingProfiler is a Profiler that counts the calls it sees.
+type countingProfiler struct{ calls *int }
+
+func (p countingProfiler) Start(*lisp.LVal) func() {
+	*p.calls++
+	return func() {}
+}
+
+// checkEvalSExprParity runs src twice through viaEval.Eval and
+// viaSExpr.EvalSExpr and fails if the rendered results differ.
+func checkEvalSExprParity(t *testing.T, viaEval, viaSExpr *lisp.LEnv, src string, render func(*lisp.LVal) string) {
+	t.Helper()
+	for i := range 2 {
+		a, err := viaEval.Runtime.Reader.Read("form", strings.NewReader(src))
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, err := viaSExpr.Runtime.Reader.Read("form", strings.NewReader(src))
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, want := render(viaEval.Eval(a[0])), render(viaSExpr.EvalSExpr(b[0]))
+		if got != want {
+			t.Errorf("run %d: Eval gave %s, EvalSExpr gave %s", i, got, want)
+		}
 	}
 }

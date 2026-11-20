@@ -11,7 +11,7 @@ import (
 
 // The functions in this file are the cold paths of the evaluator's recursive
 // functions (eval, evalSExpr, evalSExprCells, funCallFrame, specialOpCall,
-// call and callBuiltin): error construction, debugger hooks and
+// and call): error construction, debugger hooks and
 // internal-error panics.  They are split out, and kept out of line, because
 // those functions are on the Go stack once or more for every level of Lisp
 // nesting.
@@ -28,10 +28,12 @@ import (
 // taken on a normal call.
 //
 // The other part of the same work removes whole frames from each level:
-// evalSExpr calls funCallFrame directly (no funCall frame), evalSExprCells
-// calls eval directly (no evalOperand frame), and a builtin's terminal mark
-// is evaluated by the frame that made the call (no call and callBuiltin
-// frames under every if, let, progn and cond; see beginTerminal).
+// eval spells out evalSExpr for a call form (no evalSExpr frame), which calls
+// funCallFrame directly (no funCall frame), evalSExprCells calls eval
+// directly (no evalOperand frame), call runs a builtin itself (no
+// callBuiltin frame), and a builtin's terminal mark is evaluated by the frame
+// that made the call (no call frame under every if, let, progn and cond; see
+// beginTerminal).
 // TestEvalGoFramesPerLevel pins the result.
 //
 // Each helper builds exactly the value the inline code built: an error's
@@ -117,7 +119,7 @@ func (env *LEnv) restoreAfterArgs(loc *token.Location, resetTerminal bool) {
 	env.loc = loc
 }
 
-// errInvalidFunType is evalSExpr's error for a function value whose FunType
+// errInvalidFunType is evalSExpr's (and eval's) error for a function value whose FunType
 // is none of the known kinds.
 //
 //go:noinline
@@ -176,7 +178,7 @@ func (env *LEnv) debugOnFunEntry(fun *LVal, fenv *LEnv) {
 	}
 }
 
-// errTerminalMarkNoEnv is callBuiltin's error for a terminal mark that
+// errTerminalMarkNoEnv is beginTerminal's error for a terminal mark that
 // carries no environment.
 //
 //go:noinline
