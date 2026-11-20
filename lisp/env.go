@@ -2004,12 +2004,7 @@ func (env *LEnv) eval(ctx context.Context, v *LVal) (result *LVal) { //nolint:no
 	// panics.
 	checkOwnership(env.Runtime, v)
 	if env.Runtime.evalNestingExceeded() {
-		return env.ErrorConditionf(CondEvalNestingExceeded,
-			"evaluation nesting depth exceeded maximum: %d"+
-				" (expressions nested this deeply consume Go stack without pushing"+
-				" call frames, so the limit stops the Go runtime from aborting the"+
-				" process with an unrecoverable stack overflow; raise or disable it"+
-				" with WithMaxEvalNesting)", env.Runtime.evalNesting)
+		return env.evalNestingCold()
 	}
 	macroDepth := 0
 eval:
@@ -2020,10 +2015,8 @@ eval:
 		return env.Errorf("spliced value used as expression")
 	}
 	env.loc = v.loc()
-	if env.loc != nil {
-		if d := env.Runtime.Debugger; d != nil && d.IsEnabled() {
-			env.debugOnEval(ctx, d, v)
-		}
+	if env.loc != nil && env.Runtime.Debugger != nil {
+		env.debugEvalCold(ctx, v)
 	}
 	if v.quoted {
 		return v
@@ -2032,22 +2025,58 @@ eval:
 	case LSymbol:
 		return env.evalSymbol(v)
 	case LSExpr:
-		res := env.evalSExpr(ctx, v)
+		// evalSExpr, written out.  A call to evalSExpr would put a second
+		// frame on the stack for every call form being evaluated, and the
+		// Go runtime walks every frame on a goroutine's stack each time it
+		// grows the stack, so a frame saved here is work saved on every
+		// Lisp call.  The two must stay in step: keep the code below the
+		// same as evalSExpr's (v is known to be an s-expression here).
+		var res *LVal
+		if len(v.Cells) == 0 {
+			res = Nil()
+		} else if call, back := env.evalSExprCells(ctx, v); call.IsError() {
+			res = call
+			if err := env.ErrorAssociate(call); err != nil {
+				res = err
+			}
+		} else {
+			fun := call.Cells[0] // call is not an empty expression -- fun is known LFun
+			args := call
+			args.Cells = call.Cells[1:] //elps:mutates decap of the call value evalSExprCells constructed just above with fresh backing
+			switch fun.FunType {
+			case LFunNone:
+				if env.Runtime.Profiler != nil {
+					res = env.funCallTraced(ctx, fun, args, true)
+				} else {
+					res = env.funCallFrame(ctx, fun, args, true)
+				}
+				if back != nil {
+					env.returnCallList(res, args, back)
+				}
+			case LFunSpecialOp:
+				res = env.specialOpCall(ctx, fun, args, true)
+				if back != nil {
+					env.returnCallList(res, args, back)
+				}
+			case LFunMacro:
+				res = env.macroCall(ctx, fun, args)
+			default:
+				res = errorfCold(env, "internal error: invalid function type %v", fun.FunType)
+			}
+		}
 		// Post-call check: after a function call returns, the stack
 		// frame has been popped and depth has decreased. If the debugger
 		// is stepping out, this is where we catch tail-position returns
 		// that would otherwise unwind without hitting OnEval.
-		if d := env.Runtime.Debugger; d != nil && d.IsEnabled() && v.loc() != nil {
-			if d.AfterFunCall(env) {
-				d.WaitIfPaused(env, v)
-			}
+		if env.Runtime.Debugger != nil {
+			env.debugAfterFunCallCold(v)
 		}
 		if res.Type == LMarkMacExpand {
 			// A macro was just expanded and returned an unevaluated
 			// expression.  We have to evaluate the result before we return.
 			macroDepth++
 			if macroDepth > env.Runtime.MaxMacroExpansions() {
-				return env.Errorf("macro expansion depth exceeded (%d expansions)", macroDepth)
+				return errorfCold(env, "macro expansion depth exceeded (%d expansions)", macroDepth)
 			}
 			v = res.Cells[0]
 			goto eval
@@ -2121,6 +2150,9 @@ func (env *LEnv) EvalSExpr(s *LVal) *LVal {
 	return result
 }
 
+// evalSExpr evaluates the call form s.  eval does not call it: it has the
+// same code written out in its LSExpr arm, to save a Go frame per call form.
+// A change here belongs there too.
 func (env *LEnv) evalSExpr(ctx context.Context, s *LVal) *LVal {
 	if s.Type != LSExpr {
 		return env.Errorf("not an s-expression")
@@ -2141,13 +2173,19 @@ func (env *LEnv) evalSExpr(ctx context.Context, s *LVal) *LVal {
 
 	switch fun.FunType {
 	case LFunNone:
-		if back == nil {
-			return env.funCall(ctx, fun, args, true)
+		// fun is a regular function, so funCall's checks pass: call what
+		// funCall calls, and save its frame on every Lisp call.
+		var r *LVal
+		if env.Runtime.Profiler != nil {
+			r = env.funCallTraced(ctx, fun, args, true)
+		} else {
+			r = env.funCallFrame(ctx, fun, args, true)
 		}
-		// The call binds its arguments and keeps no list, so the next
-		// call form can have this one (lisp/calllist.go).
-		r := env.funCall(ctx, fun, args, true)
-		env.returnCallList(r, args, back)
+		if back != nil {
+			// The call binds its arguments and keeps no list, so the next
+			// call form can have this one (lisp/calllist.go).
+			env.returnCallList(r, args, back)
+		}
 		return r
 	case LFunSpecialOp:
 		if back == nil {
@@ -2159,7 +2197,7 @@ func (env *LEnv) evalSExpr(ctx context.Context, s *LVal) *LVal {
 	case LFunMacro:
 		return env.macroCall(ctx, fun, args)
 	default:
-		return env.Errorf("internal error: invalid function type %v", fun.FunType)
+		return errorfCold(env, "internal error: invalid function type %v", fun.FunType)
 	}
 }
 
@@ -2218,7 +2256,7 @@ func (env *LEnv) macroCall(ctx context.Context, fun, args *LVal) *LVal {
 	// Push a frame onto the stack to represent the function's execution.
 	err := env.Runtime.Stack.PushFID(env.loc, fun.FID(), fun.Package(), env.GetFunName(fun))
 	if err != nil {
-		return env.Error(err)
+		return env.errorCold(err)
 	}
 	defer env.Runtime.Stack.Pop()
 	// Macros can't participate in tail-recursion optimization at all.  Enable
@@ -2305,16 +2343,15 @@ func (env *LEnv) SpecialOpCall(fun, args *LVal) *LVal {
 
 func (env *LEnv) specialOpCall(ctx context.Context, fun, args *LVal, owned bool) *LVal {
 	if fun.Type != LFun {
-		return env.Errorf("not a special function: %v", fun.Type)
+		return errorfCold(env, "not a special function: %v", fun.Type)
 	}
 	if !fun.IsSpecialOp() {
-		return env.Errorf("not a special function: %v", fun.FunType)
+		return errorfCold(env, "not a special function: %v", fun.FunType)
 	}
 
 	// Push a frame onto the stack to represent the function's execution.
-	err := env.Runtime.Stack.PushFID(env.loc, fun.FID(), fun.Package(), env.GetFunName(fun))
-	if err != nil {
-		return env.Error(err)
+	if lerr := env.pushFunFrame(fun); lerr != nil {
+		return lerr
 	}
 	defer env.Runtime.Stack.Pop()
 
@@ -2329,7 +2366,7 @@ func (env *LEnv) specialOpCall(ctx context.Context, fun, args *LVal, owned bool)
 callf:
 	r := env.call(ctx, fun, args, owned)
 	if r == nil {
-		return env.Errorf("internal error: special operator %s returned nil", env.GetFunName(fun))
+		return env.funNameErrorCold("internal error: special operator %s returned nil", fun)
 	}
 	if r.IsError() {
 		return r
@@ -2338,14 +2375,7 @@ callf:
 	if r.Type == LMarkTailRec {
 		// Tail recursion optimization is occurring.
 		if decrementMarkTailRec(r) {
-			top := env.Runtime.Stack.Top()
-			top.HeightLogical += r.tailRecElided()
-			top.TailIterations++
-			err := env.Runtime.Stack.CheckTailCall()
-			if err != nil {
-				return env.Error(err)
-			}
-			if lerr := env.checkLimits(ctx); lerr != nil {
+			if lerr := env.tailRecEnter(ctx, r); lerr != nil {
 				return lerr
 			}
 			fun, args = extractMarkTailRec(r)
@@ -2447,10 +2477,10 @@ func (env *LEnv) trace(fun *LVal) func() {
 
 func (env *LEnv) funCall(ctx context.Context, fun, args *LVal, owned bool) *LVal {
 	if fun.Type != LFun {
-		return env.Errorf("not a function: %v", fun.Type)
+		return errorfCold(env, "not a function: %v", fun.Type)
 	}
 	if fun.IsSpecialFun() {
-		return env.Errorf("not a regular function: %v", fun.FunType)
+		return errorfCold(env, "not a regular function: %v", fun.FunType)
 	}
 	if env.Runtime.Profiler != nil {
 		return env.funCallTraced(ctx, fun, args, owned)
@@ -2477,15 +2507,9 @@ func (env *LEnv) funCallFrame(ctx context.Context, fun, args *LVal, owned bool) 
 	// checking.  But push FID onto the stack before popping to simplify
 	// book-keeping.  When a debugger is attached, TRO is disabled globally
 	// to provide predictable stepping and stack traces.
-	npop := 0
-	if env.Runtime.Debugger == nil {
-		npop = env.Runtime.Stack.TerminalFID(fun.FID())
-	}
-
-	// Push a frame onto the stack to represent the function's execution.
-	err := env.Runtime.Stack.PushFID(env.loc, fun.FID(), fun.Package(), env.GetFunName(fun))
-	if err != nil {
-		return env.Error(err)
+	npop, lerr := env.enterFunFrame(fun)
+	if lerr != nil {
+		return lerr
 	}
 	defer env.Runtime.Stack.Pop()
 
@@ -2496,7 +2520,7 @@ func (env *LEnv) funCallFrame(ctx context.Context, fun, args *LVal, owned bool) 
 callf:
 	r := env.call(ctx, fun, args, owned)
 	if r == nil {
-		return env.Errorf("internal error: function %s returned nil", env.GetFunName(fun))
+		return env.funNameErrorCold("internal error: function %s returned nil", fun)
 	}
 	if r.IsError() {
 		return r
@@ -2506,14 +2530,7 @@ callf:
 		// Tail recursion optimization is occurring.
 		done := decrementMarkTailRec(r)
 		if done {
-			top := env.Runtime.Stack.Top()
-			top.HeightLogical += r.tailRecElided()
-			top.TailIterations++
-			err := env.Runtime.Stack.CheckTailCall()
-			if err != nil {
-				return env.Error(err)
-			}
-			if lerr := env.checkLimits(ctx); lerr != nil {
+			if lerr := env.tailRecEnter(ctx, r); lerr != nil {
 				return lerr
 			}
 			fun, args = extractMarkTailRec(r)
@@ -2522,10 +2539,57 @@ callf:
 		}
 	}
 
-	if d := env.Runtime.Debugger; d != nil && d.IsEnabled() {
-		d.OnFunReturn(env, fun, r)
+	if env.Runtime.Debugger != nil {
+		env.debugFunReturnCold(fun, r)
 	}
 	return r
+}
+
+// enterFunFrame is funCallFrame's entry: it counts the frames a tail call
+// of fun may pop and pushes fun's frame.  Unless a debugger is attached, npop
+// is the count; with one, TRO is off and npop is 0.  A failed push returns
+// its error.  It is a function of its own so that funCallFrame's frame has no
+// slots for PushFID's arguments.
+//
+//go:noinline
+func (env *LEnv) enterFunFrame(fun *LVal) (int, *LVal) {
+	npop := 0
+	if env.Runtime.Debugger == nil {
+		npop = env.Runtime.Stack.TerminalFID(fun.FID())
+	}
+	if lerr := env.pushFunFrame(fun); lerr != nil {
+		return 0, lerr
+	}
+	return npop, nil
+}
+
+// pushFunFrame pushes a frame for fun's execution, or returns the error of a
+// failed push.  It keeps PushFID's arguments out of the frames of
+// specialOpCall and funCallFrame.
+//
+//go:noinline
+func (env *LEnv) pushFunFrame(fun *LVal) *LVal {
+	if err := env.Runtime.Stack.PushFID(env.loc, fun.FID(), fun.Package(), env.GetFunName(fun)); err != nil {
+		return env.Error(err)
+	}
+	return nil
+}
+
+// tailRecEnter books a tail call that the mark r has unwound to the frame
+// on top of the stack: it adds the elided frames to that frame's logical
+// height, counts the iteration and checks the tail-call and evaluation
+// limits.  It returns the error of a failed check, or nil, and then the
+// caller makes the call r holds.
+//
+//go:noinline
+func (env *LEnv) tailRecEnter(ctx context.Context, r *LVal) *LVal {
+	top := env.Runtime.Stack.Top()
+	top.HeightLogical += r.tailRecElided()
+	top.TailIterations++
+	if err := env.Runtime.Stack.CheckTailCall(); err != nil {
+		return env.Error(err)
+	}
+	return env.checkLimits(ctx)
 }
 
 func extractMarkTailRec(mark *LVal) (*LVal, *LVal) {
@@ -2558,8 +2622,16 @@ func decrementMarkTailRec(mark *LVal) bool {
 // arguments are evaluated: evalSExpr must return the list under the rule the
 // list was built under.
 func (env *LEnv) evalSExprCells(ctx context.Context, s *LVal) (*LVal, []*LVal) {
+	// One deferred function restores both the location and the Terminal
+	// flag, in the order two defers did, so the frame holds one closure.
 	loc := env.loc
-	defer func() { env.loc = loc }()
+	terminal := false
+	defer func() {
+		if terminal {
+			env.Runtime.Stack.Top().Terminal = true
+		}
+		env.loc = loc
+	}()
 
 	cells := s.Cells
 	if env.Runtime.Stack.Top() != nil {
@@ -2570,7 +2642,7 @@ func (env *LEnv) evalSExprCells(ctx context.Context, s *LVal) (*LVal, []*LVal) {
 		// function.
 		if env.Runtime.Stack.Top().Terminal {
 			env.Runtime.Stack.Top().Terminal = false
-			defer func() { env.Runtime.Stack.Top().Terminal = true }()
+			terminal = true
 		}
 	}
 	f := env.evalOperand(ctx, cells[0])
@@ -2579,11 +2651,10 @@ func (env *LEnv) evalSExprCells(ctx context.Context, s *LVal) (*LVal, []*LVal) {
 		return f, nil
 	}
 	if f.Type != LFun {
-		return env.Errorf("first element of expression is not a function: %v", f), nil
+		return errorfCold(env, "first element of expression is not a function: %v", f), nil
 	}
 	if f.Type == LMarkTailRec {
-		_, _ = env.Runtime.Stack.debugPrintContext(liveRenderContext(ctx), env.Runtime.getStderr(), diagnosticLimit(env.Runtime.MaxAllocBytes()))
-		log.Panicf("tail-recursion optimization attempted during argument evaluation: %v", f.Cells)
+		env.tailRecInArgsCold(ctx, f, true)
 	}
 
 	// The call value is allocated only once the function position has
@@ -2633,8 +2704,7 @@ func (env *LEnv) evalSExprCells(ctx context.Context, s *LVal) (*LVal, []*LVal) {
 			return v, nil
 		}
 		if v.Type == LMarkTailRec {
-			_, _ = env.Runtime.Stack.debugPrintContext(liveRenderContext(ctx), env.Runtime.getStderr(), diagnosticLimit(env.Runtime.MaxAllocBytes()))
-			log.Panicf("tail-recursion optimization attempted during argument evaluation: %s", env.Render(SExpr(v.Cells)))
+			env.tailRecInArgsCold(ctx, v, false)
 		}
 
 		newCells = append(newCells, v)
@@ -2699,7 +2769,7 @@ func (env *LEnv) call(ctx context.Context, fun *LVal, args *LVal, owned bool) *L
 	// special operators here without counting an extra evaluation step.
 	if ctx != nil {
 		if err := ctx.Err(); err != nil {
-			return env.ErrorConditionf(CondContextCancelled, "context cancelled: %v", err)
+			return env.contextCancelledCold(err)
 		}
 	}
 	var fenv *LEnv
@@ -2712,12 +2782,8 @@ func (env *LEnv) call(ctx context.Context, fun *LVal, args *LVal, owned bool) *L
 	if list.IsError() {
 		return list
 	}
-	if d := env.Runtime.Debugger; d != nil && d.IsEnabled() {
-		// fenv != env means this is a user-defined function (not a builtin).
-		// Builtins return the caller's env from bind.
-		if fenv != nil && fenv != env {
-			d.OnFunEntry(env, fun, fenv)
-		}
+	if env.Runtime.Debugger != nil {
+		env.debugFunEntryCold(fun, fenv)
 	}
 
 	// NOTE:  The book's suggestion of chaining env here seems like dynamic
@@ -2729,7 +2795,63 @@ func (env *LEnv) call(ctx context.Context, fun *LVal, args *LVal, owned bool) *L
 		fn = fd.builtin
 	}
 	if fn != nil {
-		return env.callBuiltin(ctx, fun, builtinCall{fd: fd, fn: fn, list: list})
+		// The native branch, written out: a builtin or special operator
+		// whose result is a terminal expression evaluates it from here, so
+		// a separate function would put one more frame on the stack of
+		// every special form.  Its defer is the only one in call and stays
+		// open-coded (go build -gcflags=-d=defer): the compiler gives up on
+		// that when a function's returns times its defers pass 15.
+
+		// Bridge ctx onto env so builtins that call env.Eval() pick it up.
+		// Save and restore to prevent stale ctx from leaking after the
+		// builtin returns.
+		prev := env.evalCtx
+		env.evalCtx = ctx
+		// A library builtin runs in its own package, like a Lisp function
+		// defined there (see the NOTE on the swap in call).  The cheap tests
+		// come first: a call from the library's own code is already in its
+		// package, and core lisp never switches.  The package is looked up by
+		// name on every call, never cached: forks and templates replace
+		// registry entries.
+		outer := env.Runtime.Package
+		var switched bool
+		if pkg := fd.pkg; outer != nil && pkg != outer.Name && pkg != env.Runtime.Registry.Lang &&
+			fun.FunType != LFunSpecialOp {
+			if inner := env.Runtime.Registry.packages[pkg]; inner != nil {
+				env.Runtime.Package = inner
+				switched = true
+			}
+		}
+		// The deferred restore covers a panic out of the builtin; the explicit
+		// one below covers every return, before a terminal expression is
+		// evaluated in the caller's environment.
+		defer func() {
+			env.evalCtx = prev
+			if switched {
+				env.Runtime.Package = outer
+			}
+		}()
+		val := fn(env, list)
+		if switched {
+			env.Runtime.Package = outer
+			switched = false
+		}
+		if val == nil {
+			return env.funNameErrorCold("internal error: builtin %s returned nil", fun)
+		}
+		if val.Type == LMarkTerminal {
+			env.Runtime.Stack.Top().Terminal = true
+			termEnv, ok := val.Native.(*LEnv)
+			if !ok {
+				return env.Errorf("internal error: terminal mark has no environment")
+			}
+			if termEnv != env {
+				return evalTerminalIn(ctx, termEnv, val.Cells[0])
+			}
+			env.evalCtx = ctx
+			return env.eval(ctx, val.Cells[0])
+		}
+		return val
 	}
 
 	// With formal arguments bound, we can switch into the function's package
@@ -2754,18 +2876,47 @@ func (env *LEnv) call(ctx context.Context, fun *LVal, args *LVal, owned bool) *L
 	// are no exceptions.  A library that needs the caller's names takes
 	// values (function values, qualified symbols), or is a macro whose
 	// expansion uses core forms.  See "Packages" in docs/lang.md.
-	outer := env.Runtime.Package
-	pkg := fun.Package()
-	if outer.Name != pkg {
-		inner := env.Runtime.Registry.packages[pkg]
-		if inner != nil {
-			env.Runtime.Package = inner
-			defer func() {
-				env.Runtime.Package = outer
-			}()
+	if env.Runtime.Package.Name != fun.Package() {
+		if inner := env.Runtime.Registry.packages[fun.Package()]; inner != nil {
+			return env.callLambdaIn(ctx, inner, fun, fenv)
 		}
 	}
+	// callLambdaBody, written out: a call to it would put one more frame
+	// on the stack of every Lisp function call.
+	body := fun.Cells[1:]
+	if len(body) == 0 {
+		return Nil()
+	}
+	for i := range len(body) - 1 {
+		if ret := fenv.eval(ctx, body[i]); ret.IsError() {
+			return ret
+		}
+	}
+	if !fun.IsMacro() {
+		env.Runtime.Stack.Top().Terminal = true
+	}
+	return fenv.eval(ctx, body[len(body)-1])
+}
 
+// callLambdaIn is call's evaluation of the body of the lambda fun, defined
+// in package inner, from code in another package: it switches to inner for
+// the evaluation and switches back on a return or a panic.  It is a function
+// of its own so that call, whose frame every Lisp function call holds while
+// the function's body is evaluated, has no defer.
+//
+//go:noinline
+func (env *LEnv) callLambdaIn(ctx context.Context, inner *Package, fun *LVal, fenv *LEnv) *LVal {
+	outer := env.Runtime.Package
+	env.Runtime.Package = inner
+	defer func() {
+		env.Runtime.Package = outer
+	}()
+	return env.callLambdaBody(ctx, fun, fenv)
+}
+
+// callLambdaBody evaluates the body of the lambda fun in fenv, its bound
+// scope, for call.  The last form is evaluated in terminal position.
+func (env *LEnv) callLambdaBody(ctx context.Context, fun *LVal, fenv *LEnv) *LVal {
 	// A lambda's body is read straight from its definition: bind returns
 	// no list for a lambda, so a call allocates no wrapper around it.
 	body := fun.Cells[1:]
@@ -2785,74 +2936,17 @@ func (env *LEnv) call(ctx context.Context, fun *LVal, args *LVal, owned bool) *L
 	return fenv.eval(ctx, body[len(body)-1])
 }
 
-// builtinCall holds the builtin implementation and argument list.
-type builtinCall struct {
-	// fd contains builtin function data.
-	fd *funData
-	// fn is the builtin implementation.
-	fn LBuiltin
-	// list contains the bound arguments.
-	list *LVal
-}
-
-// callBuiltin is call's native branch: it invokes fn, fun's Go
-// implementation, with the bound argument list.  It is a function of its own
-// so that its few defers are open-coded; in call, whose many returns rule
-// that out, every builtin call paid for a heap-style defer record.
-func (env *LEnv) callBuiltin(ctx context.Context, fun *LVal, opts builtinCall) *LVal {
-	fd, fn, list := opts.fd, opts.fn, opts.list
-
-	// Bridge ctx onto env so builtins that call env.Eval() pick it up.
-	// Save and restore to prevent stale ctx from leaking after the
-	// builtin returns.
-	prev := env.evalCtx
-	env.evalCtx = ctx
-	// A library builtin runs in its own package, like a Lisp function
-	// defined there (see the NOTE on the swap in call).  The cheap tests
-	// come first: a call from the library's own code is already in its
-	// package, and core lisp never switches.  The package is looked up by
-	// name on every call, never cached: forks and templates replace
-	// registry entries.
-	outer := env.Runtime.Package
-	var switched bool
-	if pkg := fd.pkg; outer != nil && pkg != outer.Name && pkg != env.Runtime.Registry.Lang &&
-		fun.FunType != LFunSpecialOp {
-		if inner := env.Runtime.Registry.packages[pkg]; inner != nil {
-			env.Runtime.Package = inner
-			switched = true
-		}
-	}
-	// The deferred restore covers a panic out of the builtin; the explicit
-	// one below covers every return, before a terminal expression is
-	// evaluated in the caller's environment.
-	defer func() {
-		env.evalCtx = prev
-		if switched {
-			env.Runtime.Package = outer
-		}
-	}()
-	val := fn(env, list)
-	if switched {
-		env.Runtime.Package = outer
-		switched = false
-	}
-	if val == nil {
-		return env.Errorf("internal error: builtin %s returned nil", env.GetFunName(fun))
-	}
-	if val.Type == LMarkTerminal {
-		env.Runtime.Stack.Top().Terminal = true
-		termEnv, ok := val.Native.(*LEnv)
-		if !ok {
-			return env.Errorf("internal error: terminal mark has no environment")
-		}
-		if termEnv != env {
-			prevTerm := termEnv.evalCtx
-			defer func() { termEnv.evalCtx = prevTerm }()
-		}
-		termEnv.evalCtx = ctx
-		return termEnv.eval(ctx, val.Cells[0])
-	}
-	return val
+// evalTerminalIn is call's evaluation of a terminal expression in an
+// environment other than the builtin's own, such as the scope a let built.
+// It bridges ctx onto termEnv for the evaluation and restores termEnv's
+// context after it, on a return or a panic.  It is a function of its own so
+// that call's frame, which every builtin and special operator call holds
+// while its terminal expression is evaluated, has no slot for this defer.
+func evalTerminalIn(ctx context.Context, termEnv *LEnv, expr *LVal) *LVal {
+	prevTerm := termEnv.evalCtx
+	defer func() { termEnv.evalCtx = prevTerm }()
+	termEnv.evalCtx = ctx
+	return termEnv.eval(ctx, expr)
 }
 
 // If fun is a builtin bind returns an LEnv for executing fun and a list of
