@@ -951,6 +951,40 @@ Only standard library packages are known. A name the file defines itself is
 left to [`builtin-shadowing`](#builtin-shadowing). Quoted data and
 quasiquote templates are not calls.
 
+### `macro-quoted-head`
+
+**Warns when a macro builds a form of its expansion with `list` or `cons`
+and a quoted symbol head.** (Severity: warning)
+
+A symbol written `'x` or `(quote x)` keeps its quote inside a list that `list`
+or `cons` builds. When that list is the expansion of a macro, its head is the
+quoted symbol, not a function. Evaluation fails with "first element of
+expression is not a function", or, when `unquote` inserts the list, the
+expansion silently evaluates to data. The result of `macroexpand` is `equal?`
+to the form that works, which hides the fault (luthersystems/elps#999).
+
+```lisp
+;; WARNING: (add 1 2) fails: first element of expression is not a function: '+
+(defmacro add (a b) (list '+ a b))
+;; WARNING: (my-when true 1 2) returns '('progn 1 2), not 2
+(defmacro my-when (c &rest body)
+  (quasiquote (if (unquote c) (unquote (cons 'progn body)) ())))
+
+;; GOOD: build the expansion with quasiquote
+(defmacro add (a b) (quasiquote (+ (unquote a) (unquote b))))
+(defmacro my-when (c &rest body)
+  (quasiquote (if (unquote c) (progn (unquote-splicing body)) ())))
+```
+
+The check follows the macro's result through `let`, `let*`, `progn`, `if`,
+`cond`, `when` and `unless`, the arguments of `list`, and `unquote` inside
+`quasiquote`. A data list the macro only uses while it expands, such as
+`(member x (list 'a 'b))`, is not flagged.
+
+The check has limits. It does not see a head held in a variable,
+`(let ((h '+)) (list h a b))`, or built by a helper function, and those fail
+the same way. A file that defines its own `list` or `cons` is not checked.
+
 ### `with-cleanup-forms`
 
 **Flags a degenerate `with-cleanup` spec list.** (Severity: warning)

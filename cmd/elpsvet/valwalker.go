@@ -76,6 +76,8 @@ var valueWalkerFunctions = map[string]string{ //nolint:gosec // G101: function n
 	"github.com/luthersystems/elps/lint.invalidExportLiteral":                              "syntax walker: visits source forms with syntax and quote rules",
 	"github.com/luthersystems/elps/lint.letRecursionState.visit":                           "syntax walker: visits source forms with syntax and quote rules",
 	"github.com/luthersystems/elps/lint.hasUnquote":                                        "syntax walker: looks for unquote forms in a let binding pattern, which is source, not data",
+	"github.com/luthersystems/elps/lint.macroResultWalker.result":                          "syntax walker: follows a macro's result through tail forms and list arguments of source, not data",
+	"github.com/luthersystems/elps/lint.macroResultWalker.template":                        "syntax walker: visits a quasiquote template of source for its unquote holes, skipping nested quasiquote",
 	"github.com/luthersystems/elps/lint.mentionsUnquoted":                                  "syntax walker: visits source forms with syntax and quote rules",
 	"github.com/luthersystems/elps/lint.nodeMentionsRethrowContext":                        "syntax walker: visits source forms with syntax and quote rules",
 	"github.com/luthersystems/elps/lint.walkLambdaListCalls":                               "syntax walker: visits source forms with syntax and quote rules",
