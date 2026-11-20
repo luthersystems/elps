@@ -582,3 +582,24 @@ func TestValueTagsMatchLibjson(t *testing.T) {
 		}
 	}
 }
+
+// TestObjectMemberOrderMatchesLibjson: a typed object lists its member
+// names in strictly increasing byte order, so lval.Unmarshal refuses the
+// objects libjson.LoadTyped refuses for their order, and accepts the rest
+// (luthersystems/elps#995).
+func TestObjectMemberOrderMatchesLibjson(t *testing.T) {
+	for _, in := range []string{
+		`{"a":1,"b":2}`, `{"b":1,"a":2}`, `{"a":1,"a":2}`,
+		`{"~:STATUS":"a","~$Status":"b"}`, `{"~$Status":"b","~:STATUS":"a"}`,
+		`{"~i10":1,"~i9":2}`, `{"~i9":1,"~i10":2}`,
+		`{"~?f":1,"~?t":2}`, `{"~?t":1,"~?f":2}`,
+		`{"Z":1,"a":2}`, `{"a":1,"Z":2}`, `{"~~a":1,"~$a":2}`, `{"~$a":1,"~~a":2}`,
+		`{"a":{"y":1,"x":2}}`,
+	} {
+		_, lerr := libjson.LoadTyped([]byte(in))
+		_, err := lval.Unmarshal([]byte(in))
+		if (err == nil) != (lerr == nil) {
+			t.Errorf("%s: Unmarshal: %v, LoadTyped: %v", in, err, lerr)
+		}
+	}
+}

@@ -266,8 +266,9 @@ func appendString(b []byte, s string) ([]byte, error) {
 // libjson.LoadTyped accepts, and reads it as the same value. Like
 // LoadTyped, it refuses a number, a string or a tag that is not the text
 // Marshal writes for its value, such as a number with a leading zero, an
-// escape Marshal does not write, or a "~n" int that fits a JSON number. It
-// does not check the rest of the layout, such as whitespace, so it still
+// escape Marshal does not write, or a "~n" int that fits a JSON number, and
+// an object whose member names are not in strictly increasing byte order.
+// It does not check the rest of the layout, such as whitespace, so it still
 // accepts some inputs LoadTyped refuses.
 func Unmarshal(data []byte) (Value, error) {
 	d := decoder{b: data}
@@ -682,6 +683,7 @@ func (d *decoder) object(depth int) (Value, error) {
 	if d.lit("}") {
 		return Value{kind: Map}, nil
 	}
+	prev := ""
 	for {
 		d.ws()
 		if d.i >= len(d.b) || d.b[d.i] != '"' {
@@ -691,6 +693,13 @@ func (d *decoder) object(depth int) (Value, error) {
 		if err != nil {
 			return Value{}, err
 		}
+		// libjson's typed decoder takes member names only in strictly
+		// increasing byte order, the order Marshal writes them
+		// (luthersystems/elps#995).
+		if len(keys) > 0 && prev >= ks {
+			return Value{}, d.errorf("members out of order or duplicated")
+		}
+		prev = ks
 		key, err := mapKey(ks, d)
 		if err != nil {
 			return Value{}, err
