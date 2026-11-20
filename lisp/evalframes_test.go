@@ -22,12 +22,15 @@ import (
 // the number of frames per level.  Returning terminal marks to the frame
 // that made the call (beginTerminal), and calling funCallFrame and eval
 // directly from evalSExpr and evalSExprCells, cut these counts from 14, 18
-// and 14 (elps v1.100.2 and main at 7088e80) to 10, 15 and 10.  runtime.Callers
-// counts inlined calls as frames too, so the counts do not depend on the
-// compiler's inlining.  A
-// change that puts a wrapper frame back on one of these paths fails here.
-// If a change has to add a frame, update the count and say why in the
-// commit.
+// and 14 (elps v1.100.2) to 10, 15 and 10.  A change that puts a wrapper
+// frame back on one of these paths fails here.  If a change has to add a
+// frame, update the count and say why in the commit.
+//
+// runtime.Callers counts logical frames: a call the compiler inlines counts
+// too, although it adds no frame for the copy to walk.  So the counts do not
+// depend on inlining decisions (a -gcflags=-l or PGO build gives the same
+// numbers), and a new helper on the path fails here even when it is
+// inlined.  The test does not see frame sizes.
 func TestEvalGoFramesPerLevel(t *testing.T) {
 	tests := []struct {
 		name string

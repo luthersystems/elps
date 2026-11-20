@@ -2229,7 +2229,7 @@ func (env *LEnv) macroCall(ctx context.Context, fun, args *LVal) *LVal {
 		}
 	}
 	if r == nil {
-		return env.Errorf("internal error: macro %s returned nil", env.GetFunName(fun))
+		return env.errReturnedNil("macro", fun)
 	}
 	if r.IsError() {
 		return r
@@ -2602,10 +2602,8 @@ func (env *LEnv) evalSExprCells(ctx context.Context, s *LVal) (*LVal, []*LVal) {
 		return f, nil
 	}
 	if f.Type != LFun {
+		// This also covers a tail-recursion mark, which is not an LFun.
 		return env.errNotAFunction(f), nil
-	}
-	if f.Type == LMarkTailRec {
-		env.panicTailRecInArgs(ctx, f, false)
 	}
 
 	// The call value is allocated only once the function position has
@@ -2664,7 +2662,7 @@ func (env *LEnv) evalSExprCells(ctx context.Context, s *LVal) (*LVal, []*LVal) {
 			return v, nil
 		}
 		if v.Type == LMarkTailRec {
-			env.panicTailRecInArgs(ctx, v, true)
+			env.panicTailRecInArgs(ctx, v)
 		}
 
 		newCells = append(newCells, v)
@@ -2689,6 +2687,11 @@ func (env *LEnv) evalSExprCells(ctx context.Context, s *LVal) (*LVal, []*LVal) {
 // had before the call.  The top frame of its stack trace can show
 // [terminal].  Its condition, the frames of its trace and the step count
 // are the same as through eval.
+//
+// evalSExprCells does not call evalOperand: it spells out these two lines
+// at both of its call sites, so that a nested call form's eval is called
+// from evalSExprCells's frame and evalOperand's frame is not under it
+// (lisp/evalcold.go).  Keep the three the same.
 func (env *LEnv) evalOperand(ctx context.Context, x *LVal) *LVal {
 	if operandNeedsEval(env.Runtime, x) {
 		return env.eval(ctx, x)
@@ -2908,10 +2911,13 @@ type terminalEval struct {
 // expression (lisp/evalcold.go).  beginTerminal returns before the
 // evaluation starts, so its own frame does not.
 //
-// The restore in endTerminal is not deferred, as callBuiltin's was: eval
+// The restore in endTerminal is not deferred, as callBuiltin's was: a
+// deferred restore here would need a frame under the evaluation.  eval
 // recovers every panic, so it returns normally.  The exceptions are an
 // ownership violation under the elpscheck build tag, which eval re-panics
-// to fail the test, and runtime.Goexit; both end the evaluation.
+// to fail the test, and runtime.Goexit.  After either, the two evaluation
+// contexts keep ctx; both mean the evaluation failed, and an env must not be
+// used again after one.
 func (env *LEnv) beginTerminal(ctx context.Context, val *LVal) (terminalEval, *LVal) {
 	env.Runtime.Stack.Top().Terminal = true
 	termEnv, ok := val.Native.(*LEnv)

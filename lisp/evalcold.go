@@ -97,18 +97,14 @@ func (env *LEnv) errNotAFunction(f *LVal) *LVal {
 	return env.Errorf("first element of expression is not a function: %v", f)
 }
 
-// panicTailRecInArgs reports an evaluator bug: a tail-recursion mark reached
-// evalSExprCells, in the function position (arg false) or as an argument
-// (arg true).  It prints the call stack and panics with the message each
-// position printed before.
+// panicTailRecInArgs reports an evaluator bug: a tail-recursion mark was the
+// value of an argument in evalSExprCells.  It prints the call stack and
+// panics.
 //
 //go:noinline
-func (env *LEnv) panicTailRecInArgs(ctx context.Context, mark *LVal, arg bool) {
+func (env *LEnv) panicTailRecInArgs(ctx context.Context, mark *LVal) {
 	_, _ = env.Runtime.Stack.debugPrintContext(liveRenderContext(ctx), env.Runtime.getStderr(), diagnosticLimit(env.Runtime.MaxAllocBytes()))
-	if arg {
-		log.Panicf("tail-recursion optimization attempted during argument evaluation: %s", env.Render(SExpr(mark.Cells)))
-	}
-	log.Panicf("tail-recursion optimization attempted during argument evaluation: %v", mark.Cells)
+	log.Panicf("tail-recursion optimization attempted during argument evaluation: %s", env.Render(SExpr(mark.Cells)))
 }
 
 // restoreAfterArgs is evalSExprCells's deferred restore.  It sets the top
