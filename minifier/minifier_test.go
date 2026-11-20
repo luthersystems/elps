@@ -1056,3 +1056,56 @@ func TestMinify_DefconstExecutionEquivalence(t *testing.T) {
 		})
 	}
 }
+
+// TestMinify_KeyFormalExecutionEquivalence checks that the minifier keeps the
+// name of each formal after &key. A keyword argument finds its formal by name
+// at run time, so a renamed formal breaks every call that passes it
+// (luthersystems/elps#990).
+func TestMinify_KeyFormalExecutionEquivalence(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		src  string
+		want string
+	}{
+		{"defun", `(defun greet (name &key greeting)
+  (list name greeting))
+(debug-print (greet "world" :greeting "hello"))`, "'(\"world\" \"hello\")\n"},
+		{"lambda", `(let ((f (lambda (x &key scale) (* x scale))))
+  (debug-print (f 6 :scale 7)))`, "42\n"},
+		{"flet", `(flet ((scaled (x &key by) (* x by)))
+  (debug-print (scaled 3 :by 5)))`, "15\n"},
+		{"labels", `(labels ((down (n &key acc) (if (= n 0) acc (down (- n 1) :acc (+ acc n)))))
+  (debug-print (down 4 :acc 0)))`, "10\n"},
+		{"two keys and a nested lambda", `(defun outer (a &key b c)
+  (let ((inner (lambda (&key d) (list a b c d))))
+    (inner :d 4)))
+(debug-print (outer 1 :c 3 :b 2))`, "'(1 2 3 4)\n"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			src := []byte(tt.src)
+			original, originalErr := evalDebugOutput(t, src)
+			require.NoError(t, originalErr)
+			require.Equal(t, tt.want, original)
+			out, _, err := MinifySource(src, "key-formal.lisp", nil)
+			require.NoError(t, err)
+			minified, minifiedErr := evalDebugOutput(t, out)
+			require.NoError(t, minifiedErr, "minified source: %s", out)
+			assert.Equal(t, original, minified, "minified source: %s", out)
+		})
+	}
+}
+
+// TestMinify_QuotedKeySymbolIsData: a quoted &key is data, not a lambda
+// list marker, so the symbols after it are still renamed.
+func TestMinify_QuotedKeySymbolIsData(t *testing.T) {
+	src := []byte(`(defun pick (value) (list '&key value))
+(debug-print (pick 1))`)
+	original, originalErr := evalDebugOutput(t, src)
+	require.NoError(t, originalErr)
+	out, symMap, err := MinifySource(src, "quoted-key.lisp", &Config{PreserveParams: false})
+	require.NoError(t, err)
+	minified, minifiedErr := evalDebugOutput(t, out)
+	require.NoError(t, minifiedErr, "minified source: %s", out)
+	assert.Equal(t, original, minified, "minified source: %s", out)
+	assert.Contains(t, symMap.OriginalToMinified, "value", "minified source: %s", out)
+}

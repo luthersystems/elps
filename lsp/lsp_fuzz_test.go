@@ -942,10 +942,8 @@ func (s *session) opSemanticTokens(a opArgs) {
 // belongs on the fuzzer's arbitrary documents rather than only on the handful
 // of shapes a table test can name.
 //
-// The bound is a BYTE count, matching how every other line index in this
-// package is computed (position.go splits content on "\n" and slices by byte).
-// A client counting UTF-16 code units would be stricter still; this checks the
-// weaker property the server itself claims to satisfy.
+// The bound is a BYTE count. A token in UTF-16 code units is converted back
+// to bytes first, so the check compares the token with the text it names.
 //
 // elps#428: the reader's synthesized #^ and #' heads were reported with the
 // length of their DESUGARED NAME ("lisp:expr", "lisp:function") over a
@@ -992,6 +990,13 @@ func (s *session) checkTokenSpans(uri string, data []protocol.UInteger) {
 		}
 		length := int(data[i+2])
 		prevLine, prevChar = line, char
+		// Under UTF-16 the server counts code units (elps#991). Convert the
+		// token back to bytes to check it against the text.
+		if s.srv.positionEncoding() != encodingUTF8 && line < len(lines) {
+			end := byteColumnOf(lines[line], char+length)
+			char = byteColumnOf(lines[line], char)
+			length = end - char
+		}
 
 		if line >= len(lines) {
 			s.tokenErr = fmt.Errorf("semantic token [%d:%d,+%d) is on line %d of a %d-line document (%s)",

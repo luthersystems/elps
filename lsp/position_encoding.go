@@ -39,10 +39,10 @@ import (
 //     identity, so the negotiated path costs nothing and cannot be broken by a
 //     conversion bug.
 //
-// SCOPE. This file is complete and this PR applies it to the INBOUND direction
-// everywhere and to the OUTBOUND direction only on the rename path. Which
-// outbound ranges still ship byte columns, and why, is enumerated in the PR
-// body and in the comment on Server.wireRange.
+// SCOPE. The INBOUND direction is converted everywhere. The OUTBOUND
+// direction is converted on the rename path (Server.wireRange) and for
+// semantic tokens (tokensToUTF16, elps#991). docs/lsp-guide.md lists the
+// outbound responses that still send byte columns.
 
 // positionEncoding is the unit in which the client and this server agree to
 // count Position.character.
@@ -294,10 +294,9 @@ func (s *Server) cursorAt(doc *Document, pos protocol.Position) (int, int) {
 //
 // This is applied ONLY on the rename path (see rename.go). Every other
 // outbound range in this package still ships byte columns; they are cosmetic
-// misplacements under UTF-16 rather than edits applied to a file unread, and
-// converting them means converting semantic-token lengths in the same breath
-// (elps#462 keeps those in bytes deliberately, so that a length agrees with
-// the column it is added to). That remainder is listed in the PR body.
+// misplacements under UTF-16 rather than edits applied to a file unread.
+// Semantic tokens are not ranges and have their own conversion
+// (tokensToUTF16).
 func (s *Server) wireRange(text string, rng protocol.Range) protocol.Range {
 	if s.positionEncoding() == encodingUTF8 {
 		return rng

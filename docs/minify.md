@@ -30,7 +30,7 @@ use `-w` to rewrite them in place.
 | `--exclude-file path` | Read names to exclude from a file, one per line; blank lines and lines starting with `;` are ignored (may be repeated). |
 | `--workspace dir` | Workspace root for cross-file semantic resolution. |
 | `--rename-exports` | Also rename exported symbols unless excluded. Literal export names and bindings preserved for dynamic evaluation are always kept. |
-| `--preserve-params` | Keep function and macro parameter names (default `true`); pass `--preserve-params=false` to rename them. |
+| `--preserve-params` | Keep function and macro parameter names (default `true`); pass `--preserve-params=false` to rename them. A formal after `&key` always keeps its name, because a keyword argument finds it by name. |
 
 `elps minify --help` prints the same rules as this page.
 

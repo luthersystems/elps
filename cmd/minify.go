@@ -235,5 +235,5 @@ func init() {
 	minifyCmd.Flags().BoolVar(&minifyRenameExports, "rename-exports", false,
 		"Rename exported symbols unless excluded (literal export names and dynamic-evaluation bindings are always preserved).")
 	minifyCmd.Flags().BoolVar(&minifyPreserveParams, "preserve-params", true,
-		"Preserve function and macro parameter names (default: true). Use --preserve-params=false to rename them.")
+		"Preserve function and macro parameter names (default: true). Use --preserve-params=false to rename them. Formals after &key always keep their names.")
 }

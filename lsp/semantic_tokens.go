@@ -5,6 +5,7 @@ package lsp
 import (
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/luthersystems/elps/analysis"
 	"github.com/luthersystems/elps/lisp"
@@ -88,6 +89,10 @@ func (s *Server) textDocumentSemanticTokensFull(_ *glsp.Context, params *protoco
 		collectSemanticTokens(expr, semanticTokenContext{defs: symbolDefs, refs: symbolRefs, src: src, tokens: &tokens})
 	}
 
+	if s.positionEncoding() != encodingUTF8 {
+		tokensToUTF16(tokens, src)
+	}
+
 	// Sort by position (line, then character).
 	sort.Slice(tokens, func(i, j int) bool {
 		if tokens[i].line != tokens[j].line {
@@ -100,6 +105,75 @@ func (s *Server) textDocumentSemanticTokensFull(_ *glsp.Context, params *protoco
 	data := deltaEncode(tokens)
 
 	return &protocol.SemanticTokens{Data: data}, nil
+}
+
+// tokensToUTF16 converts the byte start and byte length of each token to
+// UTF-16 code units. The conversion keeps the order of tokens on a line, so
+// it can run before or after the sort.
+//
+// An ASCII document needs no conversion, so it is not split into lines.
+// Each line with a non-ASCII byte is read once, into a table of its UTF-16
+// columns, so the cost is linear in the document and not in tokens times
+// line length (a minified file is one long line).
+func tokensToUTF16(tokens []rawToken, src *sourceText) {
+	if isASCIIOnly(src.content) {
+		return
+	}
+	lines := src.Lines()
+	// cols[l] is nil for an ASCII line, else the UTF-16 column of each byte
+	// offset of line l, 0 to len(line) inclusive.
+	cols := make(map[int][]int)
+	for i := range tokens {
+		t := &tokens[i]
+		if t.line < 0 || t.line >= len(lines) {
+			continue
+		}
+		tbl, ok := cols[t.line]
+		if !ok {
+			tbl = utf16ColumnTable(lines[t.line])
+			cols[t.line] = tbl
+		}
+		if tbl == nil {
+			continue
+		}
+		start := tableColumn(tbl, t.startChar)
+		end := tableColumn(tbl, t.startChar+t.length)
+		t.startChar, t.length = start, end-start
+	}
+}
+
+// utf16ColumnTable returns, for each byte offset of line from 0 to
+// len(line), the UTF-16 column utf16ColumnOf returns for it: an offset
+// inside a rune rounds down to the rune's start.  It returns nil for an
+// ASCII line, where the columns are the offsets.
+func utf16ColumnTable(line string) []int {
+	if isASCIIOnly(line) {
+		return nil
+	}
+	tbl := make([]int, len(line)+1)
+	units := 0
+	for i := 0; i < len(line); {
+		r, size := utf8.DecodeRuneInString(line[i:])
+		for j := i; j < i+size; j++ {
+			tbl[j] = units
+		}
+		units += utf16RuneLen(r)
+		i += size
+	}
+	tbl[len(line)] = units
+	return tbl
+}
+
+// tableColumn is utf16ColumnOf through a table from utf16ColumnTable.
+func tableColumn(tbl []int, byteCol int) int {
+	if byteCol <= 0 {
+		return 0
+	}
+	last := len(tbl) - 1
+	if byteCol >= last {
+		return tbl[last] + (byteCol - last)
+	}
+	return tbl[byteCol]
 }
 
 // semanticTokenContext holds symbol indexes, source text and token output.
@@ -359,9 +433,11 @@ func symbolKindToTokenType(kind analysis.SymbolKind) int {
 // sourceText is a document, split into lines only if something asks for them.
 //
 // Almost every atom is located from its span alone and never touches the text;
-// the lines are wanted only for a reader prefix and for the first line of a
-// multi-line literal.  Splitting lazily keeps a document with neither at the
-// cost it had before this file started consulting the source at all.
+// the lines are wanted only for a reader prefix, for the first line of a
+// multi-line literal, and for the UTF-16 conversion of a document with a
+// non-ASCII byte (tokensToUTF16).  Splitting lazily keeps an ASCII document
+// with neither at the cost it had before this file started consulting the
+// source at all.
 type sourceText struct {
 	content string
 	lines   []string
@@ -381,8 +457,8 @@ func (s *sourceText) Lines() []string {
 // Bytes, because that is the unit every position in this package is counted
 // in: token.Location.Col is "byte offset within the line, plus one" (see
 // Scanner.LocStart), elpsToLSPPosition passes it through untouched, and
-// position.go slices lines by byte throughout.  See atomSpan on why this is
-// not the unit LSP asks for.
+// position.go slices lines by byte throughout.  tokensToUTF16 converts the
+// finished tokens to the unit the client asked for.
 func (s *sourceText) lineLen(l int) int {
 	lines := s.Lines()
 	if l < 0 || l >= len(lines) {
@@ -448,13 +524,10 @@ type tokenSpan struct {
 // of ' , #' and #^ is inside any semantic token, and the atom after the prefix
 // gets exactly its own.
 //
-// ON UNITS AND LSP.  LSP 3.16 counts a position in UTF-16 code units unless
-// client and server negotiate otherwise, and this server neither offers
-// positionEncoding nor converts anything: every column it emits, from every
-// handler, is a byte offset.  That is a server-wide gap, filed separately; it
-// is not something a length can fix locally, and a length in some other unit
-// would only be inconsistent with the column it is added to.  What this
-// function guarantees is that a length is in the SAME unit as its start.
+// UNITS.  The start column and the length are both in bytes, so the length
+// is in the same unit as its start.  textDocumentSemanticTokensFull converts
+// both to UTF-16 code units (tokensToUTF16) unless the client negotiated
+// utf-8 (elps#991).
 //
 // fallbackLen is used when the node has no usable end position, which the
 // fault-tolerant parser can in principle produce; it is the length the case in

@@ -125,7 +125,7 @@ func TestLenConstraintTypes(t *testing.T) {
 
 // newSchemaEnv bootstraps a complete env with the standard library
 // (including libschema) loaded and the current package set to "user".
-func newSchemaEnv(t *testing.T) *lisp.LEnv {
+func newSchemaEnv(t testing.TB) *lisp.LEnv {
 	t.Helper()
 	env := lisp.NewEnv(nil)
 	env.Runtime.Reader = parser.NewReader()
