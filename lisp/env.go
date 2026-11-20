@@ -2901,8 +2901,9 @@ func (env *LEnv) call(ctx context.Context, fun *LVal, args *LVal, owned bool) *L
 // callLambdaIn is call's evaluation of the body of the lambda fun, defined
 // in package inner, from code in another package: it switches to inner for
 // the evaluation and switches back on a return or a panic.  It is a function
-// of its own so that call, whose frame every Lisp function call holds while
-// the function's body is evaluated, has no defer.
+// of its own so that its defer stays out of call, whose frame every Lisp
+// function call holds while the function's body is evaluated: call keeps
+// one defer, in its native branch, and that one stays open-coded.
 //
 //go:noinline
 func (env *LEnv) callLambdaIn(ctx context.Context, inner *Package, fun *LVal, fenv *LEnv) *LVal {

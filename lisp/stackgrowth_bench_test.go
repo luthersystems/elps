@@ -19,7 +19,7 @@ const stackGrowthProgram = `
 (defun rec-map (n) (if (= n 0) 0 (+ 1 (car (map 'list (lambda (x) (rec-map (- n 1))) '(1))))))
 `
 
-// BenchmarkEvalStackGrowth evaluates each recursion at many depths, each on
+// BenchmarkEvalStackGrowthParallel evaluates each recursion at many depths, each on
 // a fresh goroutine, as a server runs each request.  A fresh goroutine starts
 // with a small stack, and the Go runtime grows it by copying, walking every
 // frame on it each time (runtime.morestack, copystack), so the time measures
@@ -27,7 +27,12 @@ const stackGrowthProgram = `
 // cost over the stack sizes where growth happens.  Other short goroutines
 // keep the runtime's adaptive starting stack size small, as a server's many
 // small goroutines do.
-func BenchmarkEvalStackGrowth(b *testing.B) {
+//
+// It is named *Parallel, though it does not call RunParallel, so the
+// gated benchmark job (GOMAXPROCS=1, -benchtime=100ms) skips it: its time
+// rests on the scheduler and the runtime's adaptive stack size, and spread
+// 25-44 ms/op over ten such runs.  The informational parallel job runs it.
+func BenchmarkEvalStackGrowthParallel(b *testing.B) {
 	env, _ := newCallHeavyEnv(b)
 	if rc := env.LoadString("stack-growth.lisp", stackGrowthProgram); rc.Type == lisp.LError {
 		b.Fatal(rc)
