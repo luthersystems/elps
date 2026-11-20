@@ -20,7 +20,10 @@ func TestMacroQuotedHead(t *testing.T) {
   (let ((y x))
     (if c (list 'if c (list 'progn y)) (cons 'list (list y)))))
 (defmacro sp () (quasiquote (progn (unquote-splicing (list (list 'f 1))))))
-(defmacro conds (c) (cond (c (list 'g)) (:else (progn (list 'h)))))`)
+(defmacro conds (c) (cond (c (list 'g)) (:else (progn (list 'h)))))
+(defmacro head-splice (a) (quasiquote ((unquote-splicing (list '+ a 1)))))
+(defmacro cons-tail (c) (cons 'if (list c (list 'k))))
+(defun g (list) list)`)
 	assertDiagOnLine(t, diags, 1, "built with list has the quoted head '+")
 	assertDiagOnLine(t, diags, 2, "quoted head '+")
 	assertDiagOnLine(t, diags, 4, "built with cons has the quoted head 'progn")
@@ -30,7 +33,10 @@ func TestMacroQuotedHead(t *testing.T) {
 	assertDiagOnLine(t, diags, 9, "quoted head 'f")
 	assertDiagOnLine(t, diags, 10, "quoted head 'g")
 	assertDiagOnLine(t, diags, 10, "quoted head 'h")
-	assert.Len(t, diags, 9)
+	assertDiagOnLine(t, diags, 11, "quoted head '+")
+	assertDiagOnLine(t, diags, 12, "quoted head 'if")
+	assertDiagOnLine(t, diags, 12, "quoted head 'k")
+	assert.Len(t, diags, 12, "a parameter named list does not turn the check off")
 }
 
 // Lookalikes that work at run time are not flagged.
@@ -45,8 +51,13 @@ func TestMacroQuotedHeadValid(t *testing.T) {
 (defmacro ok6 (x) (quasiquote (quasiquote (f (unquote (list 'g (unquote x)))))))
 (defun not-a-macro () (list '+ 1 2))
 (set 'data (list 'a 1))
-(defmacro ok7 (a) (list '+ a 1)) ; nolint:macro-quoted-head`))
-	// A file that defines its own list is not checked.
+(defmacro ok7 (a) (list '+ a 1)) ; nolint:macro-quoted-head
+(defmacro ok8 () (quasiquote (f (lisp:unquote (list 'g)))))
+(defmacro ok9 () (quasiquote (f (quote (unquote (list 'a 'b))))))
+(defmacro ok10 () (quasiquote (f '(unquote (list 'a 'b)))))
+(set 'data '((defmacro m () (list 'f))))
+(set 'more (quote (defmacro m () (list 'f))))`))
+	// A file that defines its own list is not checked: list may build code.
 	assertNoDiags(t, lintCheck(t, AnalyzerMacroQuotedHead, `(defun list (&rest xs) xs)
 (defmacro m () (list 'f))`))
 }

@@ -977,13 +977,16 @@ to the form that works, which hides the fault (luthersystems/elps#999).
 ```
 
 The check follows the macro's result through `let`, `let*`, `progn`, `if`,
-`cond`, `when` and `unless`, the arguments of `list`, and `unquote` inside
-`quasiquote`. A data list the macro only uses while it expands, such as
+`cond`, `when` and `unless`, the arguments of `list`, a `(list ...)` tail of
+`cons`, and `unquote` and `unquote-splicing` inside `quasiquote`. A data list the macro only uses while it expands, such as
 `(member x (list 'a 'b))`, is not flagged.
 
 The check has limits. It does not see a head held in a variable,
 `(let ((h '+)) (list h a b))`, or built by a helper function, and those fail
-the same way. A file that defines its own `list` or `cons` is not checked.
+the same way. A file that defines its own `list`, `cons` or `defmacro` with
+`defun`, `defmacro` or `set` is not checked; a parameter named `list` does
+not count. What `unquote` inserts under `quote`, a reader quote or a nested
+`quasiquote` is data, so it is not checked either.
 
 ### `with-cleanup-forms`
 

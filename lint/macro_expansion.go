@@ -21,22 +21,41 @@ var AnalyzerMacroQuotedHead = &Analyzer{
 		"Build the expansion with quasiquote instead: (quasiquote (+ (unquote a) (unquote b))). " +
 		"The check follows the macro's result through let, progn, if, cond, when and unless, " +
 		"the arguments of list, and unquote inside quasiquote. It cannot see a head passed in " +
-		"a variable or built by a helper function. Suppress with ; nolint:macro-quoted-head.",
+		"a variable or built by a helper function, and it skips a file that defines its own list, cons or " +
+		"defmacro. Suppress with ; nolint:macro-quoted-head.",
 	Run: func(pass *Pass) error {
-		userDefs := UserDefined(pass.Exprs)
-		WalkSExprs(pass.Exprs, func(sexpr *lisp.LVal, _ int) {
-			if sexpr.IsQuoted() || unqualifiedLispName(HeadSymbol(sexpr)) != "defmacro" || userDefs["defmacro"] {
-				return
-			}
-			body := macroBody(sexpr)
-			if len(body) == 0 {
-				return
-			}
-			w := macroResultWalker{pass: pass, userDefs: userDefs}
-			w.result(body[len(body)-1])
-		})
+		w := macroResultWalker{pass: pass, defined: definedFunctionNames(pass.Exprs)}
+		if w.defined["defmacro"] {
+			return nil
+		}
+		for _, expr := range pass.Exprs {
+			w.findMacros(expr)
+		}
 		return nil
 	},
+}
+
+// definedFunctionNames returns the names a file defines as functions or
+// macros with defun, defmacro or set.  Unlike UserDefined it leaves out
+// parameter names, so (defun g (list) list) does not turn the check off.
+func definedFunctionNames(exprs []*lisp.LVal) map[string]bool {
+	names := map[string]bool{}
+	WalkSExprs(exprs, func(sexpr *lisp.LVal, _ int) {
+		if sexpr.IsQuoted() || len(sexpr.Cells) < 2 {
+			return
+		}
+		switch unqualifiedLispName(HeadSymbol(sexpr)) {
+		case "defun", "defmacro":
+			if sexpr.Cells[1].Type == lisp.LSymbol {
+				names[sexpr.Cells[1].Str] = true
+			}
+		case "set":
+			if name, ok := quotedSymbol(sexpr.Cells[1]); ok {
+				names[name] = true
+			}
+		}
+	})
+	return names
 }
 
 // macroBody returns the body forms of a defmacro: the cells after the name,
@@ -53,8 +72,27 @@ func macroBody(sexpr *lisp.LVal) []*lisp.LVal {
 }
 
 type macroResultWalker struct {
-	pass     *Pass
-	userDefs map[string]bool
+	pass    *Pass
+	defined map[string]bool
+}
+
+// findMacros checks each defmacro in v.  Quoted data is not code, so a
+// defmacro inside a quote or a quasiquote template is not checked.
+func (w macroResultWalker) findMacros(v *lisp.LVal) {
+	if v == nil || v.Type != lisp.LSExpr || v.IsQuoted() || len(v.Cells) == 0 {
+		return
+	}
+	switch w.head(v) {
+	case "quote", "quasiquote":
+		return
+	case "defmacro":
+		if body := macroBody(v); len(body) > 0 {
+			w.result(body[len(body)-1])
+		}
+	}
+	for _, c := range v.Cells {
+		w.findMacros(c)
+	}
 }
 
 // head returns the core form a call names, or "" when the call is quoted,
@@ -64,7 +102,7 @@ func (w macroResultWalker) head(v *lisp.LVal) string {
 		return ""
 	}
 	name := HeadSymbol(v)
-	if name == "" || w.userDefs[name] {
+	if name == "" || w.defined[name] {
 		return ""
 	}
 	return unqualifiedLispName(name)
@@ -98,40 +136,56 @@ func (w macroResultWalker) result(v *lisp.LVal) {
 		if len(v.Cells) > 1 {
 			w.checkHead(v, v.Cells[1])
 		}
+		// A (list ...) tail holds the rest of the forms.
+		if len(v.Cells) > 2 && w.head(v.Cells[2]) == "list" {
+			for _, arg := range v.Cells[2].Cells[1:] {
+				w.result(arg)
+			}
+		}
 	case "quasiquote":
 		if len(v.Cells) > 1 {
-			w.template(v.Cells[1])
+			w.template(v.Cells[1], false)
 		}
 	}
 }
 
 // template walks a quasiquote template for the forms unquote inserts.
-// A nested quasiquote is left alone: its unquotes belong to a later
-// expansion.
-func (w macroResultWalker) template(v *lisp.LVal) {
+// Under quote, a reader quote or a nested quasiquote the template is data,
+// so what unquote inserts there becomes data too and is not followed.  The
+// markers are the bare spellings quasiquote reads: (lisp:unquote x) is
+// template data (lisp/macro.go getUnquoteType).
+func (w macroResultWalker) template(v *lisp.LVal, data bool) {
 	if v == nil || v.Type != lisp.LSExpr || len(v.Cells) == 0 {
 		return
 	}
-	switch unqualifiedLispName(HeadSymbol(v)) {
+	data = data || v.IsQuoted()
+	switch HeadSymbol(v) {
 	case "unquote":
-		if len(v.Cells) > 1 {
+		if !data && len(v.Cells) > 1 {
 			w.result(v.Cells[1])
 		}
 		return
 	case "unquote-splicing":
 		// The spliced value is a list of forms, so the forms are the
 		// elements of a (list ...) argument, not the list itself.
-		if len(v.Cells) > 1 && w.head(v.Cells[1]) == "list" {
+		if !data && len(v.Cells) > 1 && w.head(v.Cells[1]) == "list" {
 			for _, arg := range v.Cells[1].Cells[1:] {
 				w.result(arg)
 			}
 		}
 		return
-	case "quasiquote":
-		return
+	}
+	switch unqualifiedLispName(HeadSymbol(v)) {
+	case "quote", "quasiquote":
+		data = true
+	}
+	// A splice at the head of a form supplies the head itself.
+	if first := v.Cells[0]; !data && HeadSymbol(first) == "unquote-splicing" &&
+		len(first.Cells) > 1 && w.head(first.Cells[1]) == "list" && len(first.Cells[1].Cells) > 1 {
+		w.checkHead(first.Cells[1], first.Cells[1].Cells[1])
 	}
 	for _, c := range v.Cells {
-		w.template(c)
+		w.template(c, data)
 	}
 }
 
@@ -144,7 +198,7 @@ func (w macroResultWalker) checkHead(call, head *lisp.LVal) {
 	}
 	op := HeadSymbol(call)
 	w.pass.ReportNode(head,
-		"macro expansion built with %s has the quoted head '%s, so it evaluates as data, not a call to %s; build it with quasiquote",
+		"macro expansion built with %s has the quoted head '%s, so it is not a call to %s: it fails or evaluates as data; build it with quasiquote",
 		op, name, name)
 }
 
