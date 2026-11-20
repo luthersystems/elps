@@ -12,9 +12,8 @@ import "reflect"
 // copies each argument into the call's scope and keeps neither the header nor
 // the cells, so the next call can use the same storage.
 //
-// WHICH LISTS ARE REUSED.  Only a list that evalSExpr, or eval's LSExpr
-// arm (evalSExpr's code written out), built itself, for a call that
-// reusesCallList accepts:
+// WHICH LISTS ARE REUSED.  Only a list evalSExpr built itself, for a call
+// that reusesCallList accepts:
 //
 //   - A Lisp function (it has a captured environment and no Go
 //     implementation) with no &rest formal.  A &rest list aliases the call's
@@ -30,14 +29,13 @@ import "reflect"
 // Every other Go function keeps its list: a builtin may store the list it
 // is handed (list does).
 //
-// WHEN A LIST COMES BACK.  evalSExpr, or eval's LSExpr arm, returns the
-// list after the call returns, and only when the result is not the
-// tail-recursion mark that carries this very list to an outer frame
-// (markTailRec).  A panic skips the return and the collector takes the
-// list.  Nothing else can hold the list: no Lisp value, no error and no
-// debugger hook receives the argument list of a Lisp function, and no list
-// is reused while a debugger is attached.  A list is returned at most once,
-// by the frame that took it.
+// WHEN A LIST COMES BACK.  evalSExpr returns the list after the call
+// returns, and only when the result is not the tail-recursion mark that
+// carries this very list to an outer frame (markTailRec).  A panic skips
+// the return and the collector takes the list.  Nothing else can hold the
+// list: no Lisp value, no error and no debugger hook receives the argument
+// list of a Lisp function, and no list is reused while a debugger is
+// attached.  A list is returned at most once, by the frame that took it.
 //
 // The free lists belong to one Runtime, which one goroutine runs at a time.
 // A fork or a template VM starts with empty ones.

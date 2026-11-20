@@ -35,7 +35,8 @@ import (
 // Stack, conditionStack, and the LEnv Scope maps — are unprotected.
 //
 // Field order is layout-sensitive: pointer-bearing fields lead so the GC scan
-// extent stops at 160 bytes. Add scalars below conditionStack.
+// extent is as short as it can be (govet fieldalignment checks it). Add
+// scalars below callLists.
 type Runtime struct {
 	Stderr                 io.Writer
 	Reader                 Reader
@@ -51,6 +52,7 @@ type Runtime struct {
 	vmValues               *vmValueTable             // Per-VM Lisp values; see SetVMValue.
 	vmCache                map[any]any               // Go values a library cached on this VM; see SetVMCache.
 	conditionParents       map[string]conditionEntry // The hierarchy from DefineCondition; see conditionParentsShared.
+	marks                  evalMarks                 // Trampoline marks this VM reuses; see lisp/evalmarks.go.
 	conditionStack         []*LVal
 	callLists              callLists     // Free call lists of this VM; see lisp/calllist.go.
 	MaxValueDepth          int           // Optional limit for iterative value walks (zero uses MaxValueDepth).

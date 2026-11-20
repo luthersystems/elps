@@ -82,14 +82,15 @@ func TestEmptyScopeAllocations(t *testing.T) {
 	// (bindings &rest expr)), and by two more when the evaluator stopped
 	// copying the argument list of a Go call it builds itself (bindOwned),
 	// and by one more when the evaluator began to reuse let's list
-	// (lisp/calllist.go).
+	// (lisp/calllist.go), and by one more when it began to reuse the terminal
+	// mark let returns (lisp/evalmarks.go).
 	for _, tc := range []struct {
 		name string
 		call func() *LVal
 		want float64
 	}{
 		{"ZeroArgumentLambda", func() *LVal { return env.FunCall(fun, args) }, 1},
-		{"EmptyLet", func() *LVal { return env.Eval(let) }, 2},
+		{"EmptyLet", func() *LVal { return env.Eval(let) }, 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := testing.AllocsPerRun(200, func() { hotpathValue = tc.call() })
@@ -98,6 +99,9 @@ func TestEmptyScopeAllocations(t *testing.T) {
 			}
 			want := tc.want
 			if tc.name == "EmptyLet" && !callListsReused {
+				want++
+			}
+			if tc.name == "EmptyLet" && !evalMarksReused {
 				want++
 			}
 			if got != want {
