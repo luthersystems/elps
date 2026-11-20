@@ -44,3 +44,24 @@ func TestEqualBytesAndQuote(t *testing.T) {
 	}
 	elpstest.RunTestSuite(t, tests)
 }
+
+// equal? used to be false for any function compared with itself
+// (luthersystems/elps#997).  Native values are in TestEqualNativeValues.
+func TestEqualFunctions(t *testing.T) {
+	tests := elpstest.TestSuite{
+		{"equal? on functions", elpstest.TestSequence{
+			{`(equal? car car)`, `true`, ``},
+			{`(let ((f car)) (equal? f f))`, `true`, ``},
+			{`(equal? car cdr)`, `false`, ``},
+			{`(let ((g (lambda (x) x))) (equal? g g))`, `true`, ``},
+			{`(let ((g (lambda (x) x))) (equal? (list g) (list g)))`, `true`, ``},
+			// Two evaluations of one lambda form make two functions.
+			{`(equal? (lambda (x) x) (lambda (x) x))`, `false`, ``},
+			{`(defun f (x) x)`, `()`, ``},
+			{`(equal? f #'f)`, `true`, ``},
+			{`(equal? (sorted-map "cb" f) (sorted-map "cb" f))`, `true`, ``},
+			{`(equal? f 'f)`, `false`, ``},
+		}},
+	}
+	elpstest.RunTestSuite(t, tests)
+}

@@ -1921,11 +1921,19 @@ func (v *LVal) equalShallow(other *LVal, depth int, budget *int) *LVal {
 			}
 		}
 		return Bool(true)
-	case LInvalid, LInt, LFloat, LError, LFun, LNative,
+	case LError, LFun, LNative:
+		return Bool(opaqueEqual(v, other))
+	case LInvalid, LInt, LFloat,
 		LMarkTerminal, LMarkTailRec, LMarkMacExpand, LTypeMax:
 		return Bool(false)
 	}
 	return Bool(false)
+}
+
+// isOpaqueEqualType reports whether equal? compares values of type t with
+// opaqueEqual instead of walking them.
+func isOpaqueEqualType(t LType) bool {
+	return t == LError || t == LFun || t == LNative
 }
 
 // A repeated pair restarts the entire comparison with memoization from the
@@ -2011,6 +2019,10 @@ walk:
 			}
 		} else if a.Type == LBytes {
 			if !bytes.Equal(a.Bytes(), b.Bytes()) {
+				return Bool(false), false
+			}
+		} else if isOpaqueEqualType(a.Type) {
+			if !opaqueEqual(a, b) {
 				return Bool(false), false
 			}
 		} else {

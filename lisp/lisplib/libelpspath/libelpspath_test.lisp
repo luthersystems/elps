@@ -52,6 +52,21 @@
   (elpspath:?set! val '(range 2) (vector 90 91))
   (assert-equal (vector 1 2 90 91) val))
 
+; An empty list is nil, but as a range replacement it is the empty splice,
+; the same as (vector). Both the copying and the in-place set accept it
+; (luthersystems/elps#998).
+(test "range set with an empty list deletes the range"
+  (let ([v (vector 1 2 3)])
+    (assert-equal (vector 3) (elpspath:?set v '(range 0 2) (list)))
+    (assert-equal (vector 3) (elpspath:?set v '(range 0 2) ()))
+    (assert-equal (vector 3) (elpspath:?set v '(range 0 2) (vector)))
+    (assert-equal (vector 1 2 3) v)
+    (assert-equal (list 1) (elpspath:?set (list 1 2 3) '(range 1) (list)))
+    (assert-equal (vector 1 2 3) (elpspath:?set v '(range 1 1) (list))))
+  (let ([v (vector 1 2 3 4)])
+    (elpspath:?set! v '(range 1 3) (list))
+    (assert-equal (vector 1 4) v)))
+
 ; A range set is a SPLICE, not an element-wise assignment: the replacement
 ; may be any length and the sequence grows or shrinks to suit. That is easy
 ; to assume otherwise from the equal-length case above, which is the only

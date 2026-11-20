@@ -1710,10 +1710,16 @@ func (s *rangePath) setMutate(in *lisp.LVal, newIn *lisp.LVal, op *copyOp) (*lis
 	if newIn.Type != lisp.LSExpr && newIn.Type != lisp.LArray {
 		return nil, fmt.Errorf("range replacement must be a list or vector; got %s", newIn.Type)
 	}
-	setCells, err := toCells(newIn)
-	if err != nil {
-		// Keep container-shape failures distinct from source traversal.
-		return nil, fmt.Errorf("invalid range replacement: %w", err)
+	// An empty list is nil, which toCells refuses as a source. As a
+	// replacement it is the empty splice, the same as (vector)
+	// (luthersystems/elps#998).
+	var setCells []*lisp.LVal
+	if !newIn.IsNil() {
+		setCells, err = toCells(newIn)
+		if err != nil {
+			// Keep container-shape failures distinct from source traversal.
+			return nil, fmt.Errorf("invalid range replacement: %w", err)
+		}
 	}
 	// IMPORTANT: the splice is built in a slice this function allocates, not
 	// by appending onto cells' own prefix.

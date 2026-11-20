@@ -535,8 +535,13 @@ var (
 			content, and a reader quote (''a) by its quoted value.
 			Sorted-map keys compare by name, matching how get and key?
 			identify them, so a map keyed by 'a is equal? to a map keyed by
-			"a". Raises an ordinary depth error if comparison exceeds the
-			configured value depth (default 1000000).`},
+			"a". A function is equal? to the same function, such as car to
+			car, but two evaluations of one lambda form are not. An error
+			is equal? only to itself. A native value, such as a time or a
+			duration, compares by its payload: times at the same instant
+			and durations of the same length are equal?. Raises an ordinary
+			depth error if comparison exceeds the configured value depth
+			(default 1000000).`},
 		{"all?", Formals("predicate", "seq"), builtinAllP,
 			`Returns true if predicate returns truthy for every element in
 			seq. Returns true for an empty sequence. Short-circuits on the
