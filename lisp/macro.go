@@ -40,8 +40,10 @@ var langMacros = []*langBuiltin{
 	{"defmacro", Formals("name", "formals", VarArgSymbol, "expr"), macroDefmacro,
 		`Defines a named macro in the current package. The body receives
 		unevaluated forms and must return a form to be evaluated at the
-		call site. Use quasiquote/unquote to construct the expansion.
-		An optional leading string in the body serves as a docstring.
+		call site. Use quasiquote/unquote to construct the expansion. A
+		list built with list or cons and a quoted symbol head, as in
+		(list '+ a b), keeps the quote, so it evaluates as data, not as a
+		call. An optional leading string in the body serves as a docstring.
 		Malformed lambda lists and duplicate parameter names are errors at
 		creation; see lambda for the parameter-list rules.
 		The lisp package is sealed after initialization; defining a name

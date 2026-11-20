@@ -1009,5 +1009,6 @@ func DefaultAnalyzers() []*Analyzer {
 		AnalyzerSchemaTypeUnion,
 		AnalyzerMatchUnreachable,
 		AnalyzerUsePackageHidesLisp,
+		AnalyzerMacroQuotedHead,
 	}
 }

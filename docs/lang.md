@@ -567,6 +567,14 @@ expansion of the macro.
 (macroexpand '(m 1 2 3)) ; evaluates to '(+ 1 2 3)
 ```
 
+Build an expansion with `quasiquote`, not with `list` or `cons` and a quoted
+symbol. A symbol written `'+` keeps its quote inside a list, so the expansion
+of `(defmacro add (a b) (list '+ a b))` has the quoted head `'+`. Calling
+`(add 1 2)` fails with "first element of expression is not a function: '+",
+although the result of `macroexpand` is `equal?` to `'(+ 1 2)`. A list built that way and inserted
+with `unquote` evaluates to data, with no error. `elps lint` reports these
+forms with its `macro-quoted-head` check (luthersystems/elps#999).
+
 The macroexpand-1 function is just like macroexpand except it will not
 recursively expand macros when the result of the argument macro form is itself
 a macro form.
