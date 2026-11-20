@@ -198,3 +198,23 @@ func CallListsFree(r *Runtime) int {
 
 // CallListKeep is the bound on each free list of call lists.
 const CallListKeep = callListKeep
+
+// FreeTerminalMark and FreeTailRecMark return r's free trampoline marks, or
+// nil (lisp/evalmarks.go).
+func FreeTerminalMark(r *Runtime) *LVal { return r.marks.freeTerminal }
+func FreeTailRecMark(r *Runtime) *LVal  { return r.marks.freeTailRec }
+
+// DisownTailRecMark gives up r's claim on m, as the evaluator does before a
+// debugger is shown m.
+func DisownTailRecMark(r *Runtime, m *LVal) { r.disownTailRecMark(m) }
+
+// NewTailRecMark, ReleaseTerminalMark and ReleaseTailRecMark make and give
+// back trampoline marks as the evaluator does.
+func NewTailRecMark(r *Runtime, npop int, fun, args *LVal) *LVal {
+	return r.newTailRecMark(npop, fun, args)
+}
+func ReleaseTerminalMark(r *Runtime, m *LVal) { r.releaseTerminalMark(m) }
+func ReleaseTailRecMark(r *Runtime, m *LVal)  { r.releaseTailRecMark(m) }
+
+// EvalMarksReused reports whether this build reuses trampoline marks.
+const EvalMarksReused = evalMarksReused
