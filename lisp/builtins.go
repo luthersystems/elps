@@ -1247,6 +1247,7 @@ func (env *LEnv) plainCall(fun, args *LVal) *LVal {
 	val := env.FunCall(fun, args)
 	if val.Type == LMarkTailRec {
 		markFun, markArgs := extractMarkTailRec(val)
+		env.Runtime.releaseTailRecMark(val)
 		return env.FunCall(markFun, markArgs)
 	}
 	return val

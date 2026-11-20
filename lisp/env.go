@@ -1208,17 +1208,7 @@ func formalSymbolsMessage(formals *LVal, legacyKeywords bool) string {
 }
 
 func (env *LEnv) Terminal(expr *LVal) *LVal {
-	x := &struct {
-		c [1]*LVal
-		v LVal
-	}{}
-	x.c[0] = expr
-	x.v = LVal{
-		Type:   LMarkTerminal,
-		Native: env, //elpsvet:allow-native evaluator-internal trampoline marker consumed by call before it can reach a Lisp binding
-		Cells:  x.c[:],
-	}
-	return &x.v
+	return env.Runtime.newTerminalMark(env, expr)
 }
 
 func (env *LEnv) root() *LEnv {
@@ -2349,6 +2339,7 @@ callf:
 				return lerr
 			}
 			fun, args = extractMarkTailRec(r)
+			env.Runtime.releaseTailRecMark(r)
 			owned = false
 			goto callf
 		}
@@ -2490,7 +2481,7 @@ func (env *LEnv) funCallFrame(ctx context.Context, fun, args *LVal, owned bool) 
 	defer env.Runtime.Stack.Pop()
 
 	if npop > 0 {
-		return markTailRec(npop, fun, args)
+		return env.Runtime.newTailRecMark(npop, fun, args)
 	}
 
 callf:
@@ -2517,12 +2508,16 @@ callf:
 				return lerr
 			}
 			fun, args = extractMarkTailRec(r)
+			env.Runtime.releaseTailRecMark(r)
 			owned = false
 			goto callf
 		}
 	}
 
 	if d := env.Runtime.Debugger; d != nil && d.IsEnabled() {
+		if r.Type == LMarkTailRec {
+			env.Runtime.disownTailRecMark(r)
+		}
 		d.OnFunReturn(env, fun, r)
 	}
 	return r
@@ -2850,7 +2845,9 @@ func (env *LEnv) callBuiltin(ctx context.Context, fun *LVal, opts builtinCall) *
 			defer func() { termEnv.evalCtx = prevTerm }()
 		}
 		termEnv.evalCtx = ctx
-		return termEnv.eval(ctx, val.Cells[0])
+		expr := val.Cells[0]
+		env.Runtime.releaseTerminalMark(val)
+		return termEnv.eval(ctx, expr)
 	}
 	return val
 }

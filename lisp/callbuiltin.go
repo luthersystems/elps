@@ -144,6 +144,7 @@ func (env *LEnv) CallBuiltin(b BuiltinRef, args ...*LVal) (*LVal, error) {
 			stack.Frames[top].Terminal = false
 		}
 		fun, fargs := extractMarkTailRec(val)
+		env.Runtime.releaseTailRecMark(val)
 		return valueOf(env.funCall(env.evalCtx, fun, fargs, false))
 	}
 	if val.Type == LMarkTerminal {
@@ -167,7 +168,9 @@ func (env *LEnv) evalTerminalMark(val *LVal) *LVal {
 		defer func() { termEnv.evalCtx = prev }()
 		termEnv.evalCtx = ctx
 	}
-	return termEnv.eval(ctx, val.Cells[0])
+	expr := val.Cells[0]
+	env.Runtime.releaseTerminalMark(val)
+	return termEnv.eval(ctx, expr)
 }
 
 // CallGlobal calls the function bound to the global symbol named sym -- a
