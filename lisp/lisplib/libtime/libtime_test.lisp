@@ -33,3 +33,19 @@
                    "2000-01-01T01:13:00Z"))
   (assert (string= (format-rfc3339-nano (time-add epoch complex-dur))
                    "2000-01-01T01:13:00.45Z")))
+
+; equal? compares times by instant and durations by length
+; (luthersystems/elps#997).
+(test-let "equal?"
+  ((t0 (parse-rfc3339 "2000-01-01T00:00:00Z"))
+   (t0-again (parse-rfc3339 "2000-01-01T00:00:00Z"))
+   (t0-zone (parse-rfc3339 "2000-01-01T02:00:00+02:00"))
+   (t1 (parse-rfc3339 "2000-01-01T00:00:01Z")))
+  (assert (equal? t0 t0))
+  (assert (equal? t0 t0-again))
+  (assert (equal? t0 t0-zone))
+  (assert (not (equal? t0 t1)))
+  (assert (equal? (sorted-map "at" t0) (sorted-map "at" t0-again)))
+  (assert (equal? (parse-duration "1s") (parse-duration "1000ms")))
+  (assert (not (equal? (parse-duration "1s") (parse-duration "2s"))))
+  (assert (not (equal? (parse-duration "1s") 1))))

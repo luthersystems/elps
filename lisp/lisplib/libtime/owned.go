@@ -54,3 +54,16 @@ func borrowTime(v *lisp.LVal) (time.Time, bool) {
 	}
 	return lisp.NativeValue[time.Time](v)
 }
+
+// EqualNative makes equal? true for two times at the same instant, as
+// time= decides it.  The other payload may be an ownedTime or a raw host
+// time.Time (lisp.NativeEqualer).
+func (t ownedTime) EqualNative(other any) bool {
+	switch o := other.(type) {
+	case ownedTime:
+		return t.t.Equal(o.t)
+	case time.Time:
+		return t.t.Equal(o)
+	}
+	return false
+}

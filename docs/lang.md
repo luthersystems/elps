@@ -272,6 +272,22 @@ explicit `quote` form is a list:
 `equal?` compares a reader quote by the value it quotes, and a bytes value by
 its content: `(equal? (to-bytes "ab") (to-bytes "ab"))` is true.
 
+Functions, errors and native values cannot be walked, so `equal?` compares
+them another way:
+
+- A function is `equal?` to the same function: `(equal? car car)` is true, and
+  so is a list holding one closure compared with itself. Two evaluations of
+  one `lambda` form make two functions, which are not `equal?`.
+- An error is `equal?` only to itself.
+- A native value compares by its Go payload. Times at the same instant are
+  `equal?`, as `time:time=` decides it, and durations of the same length are
+  `equal?`. A host package can define equality for its own payloads (see
+  `NativeEqualer` in the embedding guide); a payload without it is `equal?`
+  only to itself, or to a payload of the same scalar Go type and value.
+
+Before luthersystems/elps#997, `equal?` returned false for all three, even for
+a value compared with itself.
+
 A macro receives unevaluated forms. A macro that inspects `(car form)` to
 recognize `(quote x)` must also handle the reader-quote representation of
 `'x`; it cannot assume both spellings arrive as a list headed by `quote`.

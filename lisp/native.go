@@ -156,3 +156,77 @@ func RequireNative[T any](v *LVal) (T, error) {
 func NativeOf[T any](x T) *LVal {
 	return Native(x) //elpsvet:allow-native the typed constructor: T is the caller's, and every NativeOf call is checked at its own call site
 }
+
+// NativeEqualer lets a native payload define equal? for LNative values.
+// equal? calls EqualNative on the first operand's payload, or on the second
+// operand's when only that one implements it, and passes the other payload.
+//
+// EqualNative must be an equivalence: reflexive, symmetric and transitive.
+// It must be deterministic and must not mutate either payload, because
+// every endorser of a transaction must compute the same answer.
+type NativeEqualer interface {
+	EqualNative(other any) bool
+}
+
+// opaqueEqual is equal? for an error, a function or a native value, the
+// value types equal? cannot walk (luthersystems/elps#997):
+//
+//   - A value is equal? to itself.
+//   - Two functions are equal? when they hold the same function: the same
+//     builtin registration or the same closure.  Two evaluations of one
+//     lambda form make two functions.
+//   - Two errors are equal? only when they are the same value.
+//   - Two native values are equal? when a payload's NativeEqualer says so.
+//     Without one, payloads of the same scalar type (a bool, number or
+//     string kind, such as time.Duration) compare with ==, and pointer
+//     payloads compare by address.
+func opaqueEqual(a, b *LVal) bool {
+	if a == b {
+		return true
+	}
+	if a.Type != b.Type {
+		return false
+	}
+	if a.Type == LFun {
+		fa, aok := a.Native.(*funData)
+		fb, bok := b.Native.(*funData)
+		return aok && bok && fa == fb
+	}
+	if a.Type == LNative {
+		return nativeEqual(a.Native, b.Native)
+	}
+	// An error, or any type equal? does not compare, is equal only to itself.
+	return false
+}
+
+func nativeEqual(x, y any) bool {
+	if x == nil || y == nil {
+		return x == nil && y == nil
+	}
+	if e, ok := x.(NativeEqualer); ok {
+		return e.EqualNative(y)
+	}
+	if e, ok := y.(NativeEqualer); ok {
+		return e.EqualNative(x)
+	}
+	xt, yt := reflect.TypeOf(x), reflect.TypeOf(y)
+	if xt != yt {
+		return false
+	}
+	switch xt.Kind() {
+	case reflect.Bool,
+		reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr,
+		reflect.Float32, reflect.Float64, reflect.Complex64, reflect.Complex128,
+		reflect.String:
+		return x == y
+	case reflect.Pointer, reflect.UnsafePointer, reflect.Chan:
+		return reflect.ValueOf(x).Pointer() == reflect.ValueOf(y).Pointer()
+	case reflect.Invalid, reflect.Array, reflect.Func, reflect.Interface,
+		reflect.Map, reflect.Slice, reflect.Struct:
+		// Comparing these would walk host data, or panic on an
+		// uncomparable field. Only the same LVal is equal.
+		return false
+	}
+	return false
+}
