@@ -4,6 +4,7 @@ package lisp_test
 
 import (
 	"testing"
+	"time"
 
 	"github.com/luthersystems/elps/lisp"
 )
@@ -18,6 +19,17 @@ func (e equalByID) EqualNative(other any) bool {
 
 type scalarNative int64
 
+// acceptsAll claims equality with any equalByID, which equalByID does not
+// return. equal? needs both to agree.
+type acceptsAll struct{}
+
+func (acceptsAll) EqualNative(other any) bool {
+	_, ok := other.(equalByID)
+	return ok
+}
+
+type empty struct{}
+
 type structNative struct{ n int }
 
 // equal? on native values follows lisp.NativeEqualer, then scalar ==, then
@@ -27,6 +39,8 @@ func TestEqualNativeValues(t *testing.T) {
 	p := &structNative{n: 1}
 	same := lisp.Native(structNative{n: 1})
 	err := lisp.Errorf("boom")
+	ep := &equalByID{1}
+	t0 := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	tests := []struct {
 		name string
 		a, b *lisp.LVal
@@ -45,6 +59,13 @@ func TestEqualNativeValues(t *testing.T) {
 		{"native and int", lisp.Native(scalarNative(5)), lisp.Int(5), false},
 		{"same error", err, err, true},
 		{"other error", lisp.Errorf("boom"), lisp.Errorf("boom"), false},
+		{"same pointer, value-receiver equaler", lisp.Native(ep), lisp.Native(ep), true},
+		{"nil pointer, value-receiver equaler", lisp.Native((*equalByID)(nil)), lisp.Native(ep), false},
+		{"both nil pointers", lisp.Native((*equalByID)(nil)), lisp.Native((*equalByID)(nil)), true},
+		{"equalers disagree", lisp.Native(acceptsAll{}), lisp.Native(equalByID{1}), false},
+		{"zero-size pointers", lisp.Native(&empty{}), lisp.Native(&empty{}), false},
+		{"host times, same instant", lisp.Native(t0), lisp.Native(t0.In(time.FixedZone("x", 3600))), true},
+		{"host times differ", lisp.Native(t0), lisp.Native(t0.Add(time.Second)), false},
 		{"in a list", lisp.QExpr([]*lisp.LVal{lisp.Native(p)}), lisp.QExpr([]*lisp.LVal{lisp.Native(p)}), true},
 	}
 	for _, tt := range tests {

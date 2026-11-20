@@ -282,8 +282,10 @@ them another way:
 - A native value compares by its Go payload. Times at the same instant are
   `equal?`, as `time:time=` decides it, and durations of the same length are
   `equal?`. A host package can define equality for its own payloads (see
-  `NativeEqualer` in the embedding guide); a payload without it is `equal?`
-  only to itself, or to a payload of the same scalar Go type and value.
+  `NativeEqualer` in the embedding guide). Without it, a payload of a scalar
+  Go type is `equal?` to one of the same type and value, a Go pointer is
+  `equal?` to the same pointer, and any other payload is `equal?` only to
+  itself.
 
 Before luthersystems/elps#997, `equal?` returned false for all three, even for
 a value compared with itself.

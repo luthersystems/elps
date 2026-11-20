@@ -2049,10 +2049,15 @@ of three ways (luthersystems/elps#997):
 
 - A payload that implements `lisp.NativeEqualer` decides. `equal?` calls
   `EqualNative` on the first operand's payload, or on the second's when only
-  that one implements it, and passes the other payload.
+  that one implements it, and passes the other payload. When both implement
+  it with different types, both calls must return true. Two payloads that
+  are the same pointer are equal without a call.
 - A payload of a scalar Go type (a bool, number or string kind, such as
-  `time.Duration`) is `equal?` to a payload of the same type and value. A
-  pointer, unsafe pointer or channel payload compares by address.
+  `time.Duration`) is `equal?` to a payload of the same type and value. Two
+  `time.Time` payloads compare with `Time.Equal`. A pointer, unsafe pointer
+  or channel payload compares by address, except that a pointer to a
+  zero-size type is equal only to the same LVal (Go leaves the address
+  comparison of distinct zero-size variables unspecified).
 - Any other payload is `equal?` only to the same LVal.
 
 ```go
