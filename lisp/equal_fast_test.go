@@ -20,11 +20,25 @@ func TestEqualShallowHandoffSiblings(t *testing.T) {
 			t.Fatalf("depth %d: handoff lost the remaining sibling", depth)
 		}
 	}
-	// Neither object identity nor the handoff may hide a non-reflexive leaf.
-	for _, leaf := range []*LVal{Float(math.NaN()), Native(7)} {
-		v := SExpr([]*LVal{nestList(128, Int(7)), leaf})
-		if leaf.Equal(leaf) != Bool(false) || v.Equal(v) != Bool(false) {
-			t.Fatalf("unsupported or NaN leaf compared equal: %s", leaf.Type)
+	// Neither object identity nor the handoff may hide a NaN leaf.
+	leaf := Float(math.NaN())
+	v := SExpr([]*LVal{nestList(128, Int(7)), leaf})
+	if leaf.Equal(leaf) != Bool(false) || v.Equal(v) != Bool(false) {
+		t.Fatal("NaN leaf compared equal")
+	}
+	// A native payload Go cannot compare is equal only to itself, on both
+	// sides of the handoff (luthersystems/elps#997).
+	type opaque struct{ n int }
+	same := Native(opaque{7})
+	for _, depth := range []int{0, cycleGuardDepth + 1, 128} {
+		left := SExpr([]*LVal{nestList(depth, Int(7)), same})
+		right := SExpr([]*LVal{nestList(depth, Int(7)), same})
+		if left.Equal(right) != Bool(true) {
+			t.Fatalf("depth %d: the same native compared unequal", depth)
+		}
+		right.Cells[1] = Native(opaque{7})
+		if left.Equal(right) != Bool(false) {
+			t.Fatalf("depth %d: distinct opaque natives compared equal", depth)
 		}
 	}
 }

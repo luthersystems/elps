@@ -2,7 +2,10 @@
 
 package lisp
 
-import "reflect"
+import (
+	"reflect"
+	"time"
+)
 
 // NativeCloner supplies an independent payload for Lisp copy and strict detach.
 // CloneNative must not mutate its receiver. A detached clone must retain no
@@ -155,4 +158,122 @@ func RequireNative[T any](v *LVal) (T, error) {
 // the payload is immutable or suitable for a Template.
 func NativeOf[T any](x T) *LVal {
 	return Native(x) //elpsvet:allow-native the typed constructor: T is the caller's, and every NativeOf call is checked at its own call site
+}
+
+// NativeEqualer lets a native payload define equal? for LNative values.
+// equal? calls EqualNative on the first operand's payload, or on the second
+// operand's when only that one implements it, and passes the other payload.
+// When both implement it with different types, both calls must return true.
+// Two payloads that are the same pointer are equal without a call.
+//
+// EqualNative must be an equivalence: reflexive, symmetric and transitive.
+// It must be deterministic and must not mutate either payload, because
+// every endorser of a transaction must compute the same answer.
+type NativeEqualer interface {
+	EqualNative(other any) bool
+}
+
+// opaqueEqual is equal? for an error, a function or a native value, the
+// value types equal? cannot walk (luthersystems/elps#997):
+//
+//   - A value is equal? to itself.
+//   - Two functions are equal? when they hold the same function: the same
+//     builtin registration or the same closure.  Two evaluations of one
+//     lambda form make two functions.
+//   - Two errors are equal? only when they are the same value.
+//   - Two native values are equal? when a payload's NativeEqualer says so.
+//     Without one, payloads of the same scalar type (a bool, number or
+//     string kind, such as time.Duration) compare with ==, two time.Time
+//     payloads compare with Time.Equal, and pointer payloads compare by
+//     address.
+func opaqueEqual(a, b *LVal) bool {
+	if a == b {
+		return true
+	}
+	if a.Type != b.Type {
+		return false
+	}
+	if a.Type == LFun {
+		fa, aok := a.Native.(*funData)
+		fb, bok := b.Native.(*funData)
+		return aok && bok && fa == fb
+	}
+	if a.Type == LNative {
+		return nativeEqual(a.Native, b.Native)
+	}
+	// An error, or any type equal? does not compare, is equal only to itself.
+	return false
+}
+
+func nativeEqual(x, y any) bool {
+	if x == nil || y == nil {
+		return x == nil && y == nil
+	}
+	xt, yt := reflect.TypeOf(x), reflect.TypeOf(y)
+	if xt == yt && isAddressKind(xt.Kind()) {
+		// The same pointer is the same payload, whatever its EqualNative
+		// says. A *T gets a value-receiver EqualNative by promotion, and a
+		// nil *T would panic in it.
+		if sameAddress(x, y) {
+			return true
+		}
+		if reflect.ValueOf(x).IsNil() || reflect.ValueOf(y).IsNil() {
+			return false
+		}
+	}
+	ex, xok := x.(NativeEqualer)
+	ey, yok := y.(NativeEqualer)
+	switch {
+	case xok && yok && xt != yt:
+		// Two packages' types: both must agree, so the answer does not
+		// depend on the order of the arguments.
+		return ex.EqualNative(y) && ey.EqualNative(x)
+	case xok:
+		return ex.EqualNative(y)
+	case yok:
+		return ey.EqualNative(x)
+	}
+	if tx, ok := x.(time.Time); ok {
+		// A host time.Time is what libtime's own payload compares with,
+		// so two of them must compare the same way to keep equal?
+		// transitive.
+		ty, ok := y.(time.Time)
+		return ok && tx.Equal(ty)
+	}
+	if xt != yt {
+		return false
+	}
+	switch xt.Kind() {
+	case reflect.Bool,
+		reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr,
+		reflect.Float32, reflect.Float64, reflect.Complex64, reflect.Complex128,
+		reflect.String:
+		return x == y
+	case reflect.Pointer, reflect.UnsafePointer, reflect.Chan:
+		// sameAddress already answered.
+		return false
+	case reflect.Invalid, reflect.Array, reflect.Func, reflect.Interface,
+		reflect.Map, reflect.Slice, reflect.Struct:
+		// Comparing these would walk host data, or panic on an
+		// uncomparable field. Only the same LVal is equal.
+		return false
+	}
+	return false
+}
+
+func isAddressKind(k reflect.Kind) bool {
+	return k == reflect.Pointer || k == reflect.UnsafePointer || k == reflect.Chan
+}
+
+// sameAddress reports whether two payloads of one address kind hold the same
+// address. Go does not say whether pointers to two distinct zero-size
+// variables are equal, so endorsers built differently could disagree. Such a
+// pointer is never the same address here.
+func sameAddress(x, y any) bool {
+	xv, yv := reflect.ValueOf(x), reflect.ValueOf(y)
+	if xv.Kind() == reflect.Pointer && xv.Type().Elem().Size() == 0 {
+		return false
+	}
+	return xv.Pointer() == yv.Pointer()
 }
