@@ -2206,7 +2206,7 @@ func TestBracketListIgnored(t *testing.T) {
 
 func TestDefaultAnalyzers(t *testing.T) {
 	analyzers := DefaultAnalyzers()
-	assert.Len(t, analyzers, 45)
+	assert.Len(t, analyzers, 46)
 	names := AnalyzerNames()
 	assert.Equal(t, []string{
 		"builtin-arity",
@@ -2228,6 +2228,7 @@ func TestDefaultAnalyzers(t *testing.T) {
 		"let-recursion",
 		"lisp-package-seal",
 		"loop-variable-capture",
+		"macro-quoted-head",
 		"match-unreachable",
 		"package-builtins",
 		"quote-call",
@@ -2723,6 +2724,7 @@ func TestSeverity_AnalyzerDefaults(t *testing.T) {
 		"undefined-symbol":       SeverityError,
 		"unused-variable":        SeverityWarning,
 		"use-package-hides-lisp": SeverityWarning,
+		"macro-quoted-head":      SeverityWarning,
 		"unused-function":        SeverityWarning,
 		"shadowing":              SeverityInfo,
 		"user-arity":             SeverityError,
