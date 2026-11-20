@@ -11,8 +11,8 @@ package lisp
 // frame it unwinds to.  Each was one allocation per use.
 //
 // A mark is read by exactly one evaluator frame, which copies out what it
-// carries and then drops it: callBuiltin and evalTerminalMark evaluate a
-// terminal mark's expression, and funCallFrame, specialOpCall, CallBuiltin
+// carries and then drops it: beginTerminal's callers and evalTerminalMark
+// evaluate a terminal mark's expression, and funCallFrame, specialOpCall, CallBuiltin
 // and plainCall make a tail-recursion mark's call.  No Lisp value or error
 // is handed a mark.  So that frame gives the mark back to its Runtime once
 // it has read it, and the next mark of that kind uses the same storage.
