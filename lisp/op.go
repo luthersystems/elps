@@ -1044,7 +1044,7 @@ func opLetSeq(env *LEnv, args *LVal) *LVal {
 		// that created a closure; every other binding goes into the scope it
 		// would have shared anyway, which is exactly the flat let* of before.
 		if env.Runtime.closuresCreated() != before {
-			letenv = newEnvN(letenv, len(bindlist.Cells)-i)
+			letenv = newEnvN(letenv, splitScopeHint(len(bindlist.Cells)-i))
 		}
 		lerr := letenv.Put(bind.Cells[0], val)
 		if lerr.IsError() {
@@ -1071,9 +1071,23 @@ func letSeqPattern(letenv *LEnv, bind *LVal, room int) (*LEnv, *LVal) {
 		return letenv, lerr
 	}
 	if letenv.Runtime.closuresCreated() != before {
-		letenv = newEnvN(letenv, room)
+		letenv = newEnvN(letenv, splitScopeHint(room))
 	}
 	return letenv, putBinds(letenv, binds)
+}
+
+// splitScopeHint is the size hint for the scope a let* opens after an
+// initializer that created a closure.  room is the number of bindings left,
+// but only the ones up to the next closure land in the new scope, and in a
+// run of closure bindings that is one each.  Sizing every split scope for
+// all of room made n closure bindings allocate scopes for n, n-1, n-2, ...
+// names, O(n^2) memory, and a room past scopeMapThreshold made each one an
+// eager map.  Capping the hint at scopeMapThreshold keeps the exact size for
+// a short let* and a slice-backed scope otherwise; a scope that does get
+// more bindings grows, and moves into a map past the threshold, as any
+// scope does.
+func splitScopeHint(room int) int {
+	return min(room, scopeMapThreshold)
 }
 
 func opProgn(env *LEnv, args *LVal) *LVal {

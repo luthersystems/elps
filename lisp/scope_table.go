@@ -135,9 +135,10 @@ func (t *scopeTable) put(name string, v *LVal, hint int) {
 // A slice-backed scope growing past scopeMapThreshold moves into a map.  The
 // array it leaves (the co-allocated one included) is not cleared, so it may
 // keep up to its capacity of superseded values reachable for the
-// environment's lifetime.  That is bounded, reachable only through the Go API
-// (a Lisp scope never outgrows the capacity its binding form sized it with),
-// and clearing it would hand zeroed bindings to a Bindings iteration that is
+// environment's lifetime.  That is bounded.  A Lisp scope outgrows the
+// capacity its binding form sized it with only in a let* split scope, whose
+// hint is capped at scopeMapThreshold (splitScopeHint, op.go); otherwise
+// only the Go API does it.  Clearing it would hand zeroed bindings to a Bindings iteration that is
 // still ranging over the old array.
 func (t *scopeTable) appendNew(name string, v *LVal) {
 	switch {
@@ -163,8 +164,8 @@ func (t *scopeTable) appendNew(name string, v *LVal) {
 // allocate on demand with the scopeHint the caller sets.
 //
 // The bindings slice has capacity exactly n, so a scope that outgrows it
-// (only possible through the Go API: every Lisp binding form sizes its scope
-// exactly) appends into a fresh array rather than past the co-allocated one.  The array shares the LEnv's lifetime,
+// (through the Go API, or a let* split scope, whose hint splitScopeHint caps;
+// every other Lisp binding form sizes its scope exactly) appends into a fresh array rather than past the co-allocated one.  The array shares the LEnv's lifetime,
 // which it did in effect before: the scope map lived exactly as long as its
 // environment.
 func allocEnvScope(n int) *LEnv {
