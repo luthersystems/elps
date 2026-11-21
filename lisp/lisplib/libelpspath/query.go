@@ -346,6 +346,10 @@ func BuiltinQueryGetNilSafe(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 // cell.  A cycle off the path is never walked, and a path is finite, so a
 // cycle on it is walked one step at a time and never recursed through.  So a
 // fault off the path cannot affect the write, as #960 found for reads.
+// Under iterators the work follows the elements the iterators visit, which a
+// cycle, like a shared subtree, makes exponential in the number of iterator
+// steps; the iterator work budget of #722 meters it (budget.go,
+// TestIterBudgetCyclicDocument).
 //
 // The gate made each write cost the whole document.  A program that builds a
 // document of n entries with n writes then paid for n walks: quadratic in n,

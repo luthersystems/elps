@@ -390,3 +390,58 @@ func TestIterBudgetLongChainAfterIterator(t *testing.T) {
 		})
 	}
 }
+
+// iterCycleSetup binds v to a vector that holds itself twice, and stars to
+// depth iterator steps.  depth iterator steps over it visit 3^depth
+// elements, as over a sharing chain of that depth.
+func iterCycleSetup(depth int) string {
+	return fmt.Sprintf(`(set 'v (vector 1))
+(append! v v)
+(append! v v)
+(set 'stars (map 'list (lambda (i) '*) (make-sequence 0 %d)))
+()`, depth)
+}
+
+// iterCycleCalls are the mutating builtins applied to v through depth
+// iterator steps.  The copying builtins still refuse a cyclic document.
+var iterCycleCalls = []string{
+	`(apply elpspath:?set! (concat 'list (list v) stars (list 0 2)))`,
+	// Index 5 is out of range, so the delete changes nothing and the
+	// iterators keep visiting.  A delete at 0 shrinks v, which every
+	// element is, and ends the walk early.
+	`(apply elpspath:?del! (concat 'list (list v) stars (list 5)))`,
+	`(apply elpspath:?nil! (concat 'list (list v) stars (list 0)))`,
+}
+
+// TestIterBudgetCyclicDocument pins that the iterator work budget bounds a
+// mutating write through iterators over a cyclic document (#1005).  Before
+// #1005 the whole-document gate refused such a document at once.  The
+// mutating writes no longer run that gate, so a cycle is one more way to
+// reach the exponential fan-out of #722, with fewer setup steps than a
+// sharing chain.  It is the same work, and the same budget stops it: a
+// deadline, and a step limit.
+func TestIterBudgetCyclicDocument(t *testing.T) {
+	for _, src := range iterCycleCalls {
+		t.Run("deadline/"+src, func(t *testing.T) {
+			env := iterEnv(t, 0, iterCycleSetup(iterBombDepth))
+			var rc *lisp.LVal
+			cpu := testdeadline.Watch(src, 20*time.Second, 1<<30, func() {
+				ctx, cancel := context.WithTimeout(context.Background(), testdeadline.Scale(100*time.Millisecond))
+				defer cancel()
+				rc = env.LoadStringContext(ctx, "probe.lisp", src)
+			})
+			requireCondition(t, rc, lisp.CondContextCancelled)
+			if limit := testdeadline.Scale(3 * time.Second); cpu > limit {
+				t.Fatalf("the builtin ignored its deadline: used %v of CPU time (limit %v)", cpu, limit)
+			}
+		})
+		t.Run("steps/"+src, func(t *testing.T) {
+			env := iterEnv(t, 200_000, iterCycleSetup(iterBombDepth))
+			var rc *lisp.LVal
+			testdeadline.Watch(src, 20*time.Second, 1<<30, func() {
+				rc = env.LoadString("probe.lisp", src)
+			})
+			requireCondition(t, rc, lisp.CondStepLimitExceeded)
+		})
+	}
+}

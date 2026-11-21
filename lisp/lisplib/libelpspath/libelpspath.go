@@ -44,7 +44,9 @@ wrappers, because they copy all of them. New values pass the same check.
 A read (?) with a path, and a mutating write (?set!, ?del!, ?nil!), check
 only what the path steps into: they never walk beyond the path or into the
 value they return, so a fault elsewhere cannot change the answer, and the
-cost follows the path rather than the document. The new value of ?set! is
+cost follows the path rather than the document. Under iterators the cost
+follows the elements visited, which a cycle or a shared subtree makes
+exponential in the number of iterators; that work is charged in steps. The new value of ?set! is
 still checked in full. A read with no path checks the whole document, as
 the copying writes do.
 Function bodies and captured environments remain opaque and shared; they
@@ -340,9 +342,10 @@ var errNilCell = errors.New("invalid document: nil cell")
 // the bound on every lap and it never fires.  okSimpleType is the entry
 // point that begins a walk.
 //
-// With okSimpleType this is the gate every write builtin runs before
-// touching a value; ? with a path does not, because such a read only visits
-// its path (#960).
+// With okSimpleType this is the gate every copying write builtin runs
+// before touching a value; ? with a path does not, because such a read only
+// visits its path (#960), and the mutating writes run it only on their new
+// value (#1005).
 // The copy walk refuses a multi-dimensional array itself as well, since it
 // cannot construct a copy of one and an embedder can reach it through the
 // Path API without this gate.  A cycle

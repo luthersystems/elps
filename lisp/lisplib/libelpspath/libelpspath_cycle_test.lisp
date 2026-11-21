@@ -18,14 +18,14 @@
 ; recurses into what it returns, so it answers on a cyclic value.  Since #1005
 ; a mutating write is path-scoped in the same way and answers too.  The
 ; copying writes still validate the whole document and refuse it.
-(test "cyclic-value-refused"
+(test "cyclic-value-copying-refused-mutating-answers"
   (let ([v (vector 1 2)])
     (append! v v)
     (assert-equal 1 (elpspath:? v 0))
     (assert-equal 1 (elpspath:? v 2 2 0))
     (assert-string= "caught"
                     (handler-bind ([error (lambda (_c _) "caught")])
-                      (elpspath:?set v "k" "v")))
+                      (elpspath:?set v 0 9)))
     (assert-string= "caught"
                     (handler-bind ([error (lambda (_c _) "caught")])
                       (elpspath:?del v 0)))

@@ -212,9 +212,9 @@ func TestMutatingWritesOnPathFaultsStillError(t *testing.T) {
 	})
 }
 
-// TestValidateDocumentMatchesGate pins ValidateDocument to the gate the write
-// builtins run, so an embedder gating its own writes refuses the same
-// documents with the same text.
+// TestValidateDocumentMatchesGate pins ValidateDocument to the gate the
+// copying write builtins run, so an embedder gating its own copying writes
+// refuses the same documents with the same text.
 func TestValidateDocumentMatchesGate(t *testing.T) {
 	require.NoError(t, ValidateDocument(docWithFault(lisp.Int(0))))
 	for name, fault := range offPathFaults() {

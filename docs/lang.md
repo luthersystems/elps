@@ -1636,7 +1636,9 @@ because they copy all of them. Replacement values pass the same check.
 Reads (`elpspath:?`) with a path and the mutating writes (`?set!`, `?del!`,
 `?nil!`) do not: they visit only the containers on the path and never walk
 into the value they return, so their cost follows the path, not the
-document. A fault off the path does not affect them. Stepping into one still
+document. Under iterators the cost follows the elements visited, which a
+cyclic or shared value makes exponential in the number of iterators; that
+work is charged in evaluation steps. A fault off the path does not affect them. Stepping into one still
 fails: indexing an array with other than one dimension, or stepping into a
 tagged value or quote wrapper, raises an error. A read or a mutating write
 whose path runs through a cyclic value acts on what it finds there. The new
