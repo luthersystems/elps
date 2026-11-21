@@ -241,10 +241,9 @@ type Package struct {
 	// table by thaw, so function naming matches an unfrozen package exactly.
 	slotFunNames map[string]string
 	// slotFidNames is this VM's overlay on base.fidNames while the package
-	// is frozen: for each FID a slot write changed, the whole name list,
-	// which replaces the base's list.  It is nil until the first such
-	// write and is merged into the private table by thaw.
-	slotFidNames map[string][]string
+	// is frozen.  Each entry replaces the base list for its FID.  It is nil
+	// until the first slot write and moves into fids.over on thaw.
+	slotFidNames map[string]fidNames
 	Name         string
 	Doc          string
 	externals    []string
@@ -743,13 +742,10 @@ func (pkg *Package) Export(names ...string) {
 // repeated WITHIN one call are appended once each, matching the historical
 // implementation, which tested membership against the pre-call list only.
 //
-// The single-name case has its own path because it is the only one the
-// interpreter reaches: `(export 'a 'b)` recurses one symbol at a time
-// (exportArgs, lisp/builtins.go), so exporting n names used to copy and sort
-// a one-element slice, scan the whole export list and re-sort it n times
-// over.  The fast path skips the copy and the input sort and splices the new
-// name into its sorted position instead, keeping the list sorted for the
-// next call.
+// The single-name case has its own path, exportSorted, which splices the
+// name into its sorted position.  The interpreter does not call Exports:
+// `(export ...)` gathers its names and adds them with exportAll
+// (exportArgs, lisp/builtins.go).  Exports stays for Go callers.
 func (pkg *Package) Exports(sym ...string) {
 	pkg.ensureWritable()
 	if len(sym) == 1 {
@@ -792,6 +788,58 @@ func (pkg *Package) exportSorted(name string) {
 	}
 	pkg.externals = slices.Insert(pkg.externals, i, name)
 	pkg.externalsSortedLen = len(pkg.externals)
+}
+
+// exportAll adds names to the export list, leaving it sorted.  It is
+// equivalent to calling exportSorted for each name in turn, which is what
+// `(export 'a 'b ...)` did, but that spliced each name into the sorted list,
+// moving every name after it: exporting n names cost O(n^2).  This sorts the
+// new names once and merges them in one pass instead.  Like exportSorted it
+// leaves a name that is already exported, and any duplicate Export put in the
+// list, as it was, and adds a name repeated in names once.
+func (pkg *Package) exportAll(names []string) {
+	if len(names) == 0 {
+		return
+	}
+	if len(names) == 1 {
+		pkg.exportSorted(names[0])
+		return
+	}
+	pkg.ensureWritable()
+	if pkg.externalsSortedLen != len(pkg.externals) {
+		slices.Sort(pkg.externals)
+		pkg.externalsSortedLen = len(pkg.externals)
+	}
+	add := slices.Clone(names) // the caller keeps its slice
+	slices.Sort(add)
+	add = slices.Compact(add)
+	n := 0
+	for _, name := range add {
+		if _, found := slices.BinarySearch(pkg.externals, name); !found {
+			add[n] = name
+			n++
+		}
+	}
+	if n == 0 {
+		return
+	}
+	add = add[:n]
+	// Merge from the back into the grown list, so a package that exports in
+	// many small calls does not copy its whole list on each one.
+	m := len(pkg.externals)
+	ext := slices.Grow(pkg.externals, n)[:m+n]
+	i, j := m-1, n-1
+	for k := m + n - 1; j >= 0; k-- {
+		if i >= 0 && ext[i] > add[j] {
+			ext[k] = ext[i]
+			i--
+		} else {
+			ext[k] = add[j]
+			j--
+		}
+	}
+	pkg.externals = ext
+	pkg.externalsSortedLen = len(ext)
 }
 
 // GetFunName returns the function name (if any) known to be bound to the given
@@ -863,13 +911,21 @@ func (pkg *Package) putName(name string, v *LVal) {
 	}
 	pkg.ensureWritable()
 	if idx := pkg.fids; idx != nil {
+		var oldFID string
+		var hadFun bool
 		if old, ok := pkg.symbols[name]; ok {
-			if fid, isFun := pkg.symbolFID(name, old); isFun {
-				idx.record(fidWrite{fid: fid, name: name})
-			}
+			oldFID, hadFun = pkg.symbolFID(name, old)
 		}
 		if v.Type == LFun {
-			idx.record(fidWrite{fid: v.FID(), name: name, add: true})
+			fid := v.FID()
+			if !hadFun || oldFID != fid {
+				if hadFun {
+					idx.record(fidWrite{fid: oldFID, name: name})
+				}
+				idx.record(fidWrite{fid: fid, name: name, add: true})
+			}
+		} else if hadFun {
+			idx.record(fidWrite{fid: oldFID, name: name})
 		}
 	}
 	if v.Type == LFun {
@@ -898,12 +954,15 @@ func (pkg *Package) putSlot(name string, v *LVal) bool {
 	if !ok {
 		return false
 	}
-	if fid, isFun := pkg.slotFID(i); isFun {
-		pkg.setSlotFIDNames(fid, removeSortedName(pkg.frozenFIDIndex().list(fid), name))
-	}
+	oldFID, hadFun := pkg.slotFID(i)
 	if v.Type == LFun {
 		fid := v.FID()
-		pkg.setSlotFIDNames(fid, insertSortedName(pkg.frozenFIDIndex().list(fid), name))
+		if !hadFun || oldFID != fid {
+			if hadFun {
+				pkg.setSlotFIDNames(fidWrite{fid: oldFID, name: name})
+			}
+			pkg.setSlotFIDNames(fidWrite{fid: fid, name: name, add: true})
+		}
 		if prev, ok := pkg.base.funNames.Lookup(fid); ok && prev == name {
 			delete(pkg.slotFunNames, fid)
 		} else {
@@ -915,6 +974,8 @@ func (pkg *Package) putSlot(name string, v *LVal) bool {
 		if v.Package() == pkg.Name {
 			v.funData().name = name // see funData.name
 		}
+	} else if hadFun {
+		pkg.setSlotFIDNames(fidWrite{fid: oldFID, name: name})
 	}
 	pkg.ensureBaseValues()
 	if pkg.lazy.inst != nil && pkg.baseValues[i] == nil && pkg.lazy.base.bindings[i].value.index != 0 {

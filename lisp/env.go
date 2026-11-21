@@ -2249,7 +2249,7 @@ func (env *LEnv) macroCall(ctx context.Context, fun, args *LVal) *LVal {
 	// Macros can't participate in tail-recursion optimization at all.  Enable
 	// the TROBlock on the stack fram so TerminalFID never seeks past the
 	// macro's callsite.
-	env.Runtime.Stack.Top().TROBlock = true
+	env.Runtime.Stack.setTopTROBlock()
 
 	// The macro gets a copy of args (bind, not bindOwned): args.Cells is
 	// read below, as the arguments the in-place locate stops at and as the
@@ -2619,11 +2619,7 @@ func (env *LEnv) evalSExprCells(ctx context.Context, s *LVal) (*LVal, []*LVal) {
 	// function.  One deferred call restores both Terminal and env.loc, in
 	// the order two deferred closures did: a closure each made this frame
 	// larger, and it is on the Go stack once per nested argument.
-	top := env.Runtime.Stack.Top()
-	resetTerminal := top != nil && top.Terminal
-	if resetTerminal {
-		top.Terminal = false
-	}
+	resetTerminal := env.Runtime.Stack.clearTopTerminal()
 	defer env.restoreAfterArgs(env.loc, resetTerminal)
 
 	cells := s.Cells
@@ -2900,7 +2896,7 @@ func (env *LEnv) call(ctx context.Context, fun *LVal, args *LVal, owned bool) *L
 		}
 	}
 	if !fun.IsMacro() {
-		env.Runtime.Stack.Top().Terminal = true
+		env.Runtime.Stack.setTopTerminal(true)
 	}
 	return fenv.eval(ctx, body[len(body)-1])
 }
@@ -2941,7 +2937,7 @@ type terminalEval struct {
 // contexts keep ctx; both mean the evaluation failed, and an env must not be
 // used again after one.
 func (env *LEnv) beginTerminal(ctx context.Context, val *LVal) (terminalEval, *LVal) {
-	env.Runtime.Stack.Top().Terminal = true
+	env.Runtime.Stack.setTopTerminal(true)
 	termEnv, ok := val.Native.(*LEnv)
 	if !ok {
 		return terminalEval{}, env.errTerminalMarkNoEnv()
