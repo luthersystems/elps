@@ -1629,16 +1629,19 @@ Functions remain opaque: their bodies and captured environments are shared
 and are not walked for copying or cycle checks. The replacement supplied to
 `?set` or `?set!` is also stored by reference.
 
-Writes check for cyclic containers and arrays with other than one dimension
-throughout the document, including containers outside the path and inside
-tagged values or quote wrappers, because a write may copy or rebuild any of
-them. Replacement values pass the same check. Reads (`elpspath:?`) with a path do not:
-a read visits only the containers on its path and never walks into the value
-it returns, so its cost follows the path, not the document. A fault off the
-path does not affect a read. Stepping into one still fails: indexing an array
-with other than one dimension, or stepping into a tagged value or quote
-wrapper, raises an error. A read whose path runs through a cyclic value
-returns what it finds there. Opaque leaf internals are not walked.
+The copying writes (`?set`, `?del`, `?nil`) check for cyclic containers and
+arrays with other than one dimension throughout the document, including
+containers outside the path and inside tagged values or quote wrappers,
+because they copy all of them. Replacement values pass the same check.
+Reads (`elpspath:?`) with a path and the mutating writes (`?set!`, `?del!`,
+`?nil!`) do not: they visit only the containers on the path and never walk
+into the value they return, so their cost follows the path, not the
+document. A fault off the path does not affect them. Stepping into one still
+fails: indexing an array with other than one dimension, or stepping into a
+tagged value or quote wrapper, raises an error. A read or a mutating write
+whose path runs through a cyclic value acts on what it finds there. The new
+value of `?set!` is still checked in full. Opaque leaf internals are not
+walked.
 
 A read with no path, `(elpspath:? v)`, still checks the whole document, since
 there is no path to scope it to and embedders have used it as a write gate.

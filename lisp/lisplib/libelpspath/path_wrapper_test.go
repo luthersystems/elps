@@ -100,8 +100,8 @@ func TestWrapperCyclesRejected(t *testing.T) {
 			_, err := copyLVal(doc, 0)
 			require.ErrorIs(t, err, errCyclicValue)
 			// A read of "x" never reaches the wrapped cycle, so it answers
-			// (#960); only the writes, which may copy the whole document,
-			// still refuse it.
+			// (#960), and so do the mutating writes (#1005); only the
+			// copying writes, which copy the whole document, refuse it.
 			got := BuiltinQueryGet(testEnv(t), lisp.QExpr([]*lisp.LVal{doc, lisp.String("x")}))
 			require.NotEqual(t, lisp.LError, got.Type, "%v", got)
 			assert.Equal(t, "1", got.String())
@@ -109,17 +109,28 @@ func TestWrapperCyclesRejected(t *testing.T) {
 				name string
 				run  lisp.LBuiltin
 				set  bool
+				// mutate marks the path-scoped writes (#1005).
+				mutate bool
 			}{
-				{"set", BuiltinQuerySet, true}, {"set!", BuiltinQuerySetMutate, true},
-				{"delete", BuiltinQueryDelete, false}, {"delete!", BuiltinQueryDeleteMutate, false},
-				{"nil", BuiltinQueryNil, false}, {"nil!", BuiltinQueryNilMutate, false},
+				{"set", BuiltinQuerySet, true, false}, {"set!", BuiltinQuerySetMutate, true, true},
+				{"delete", BuiltinQueryDelete, false, false}, {"delete!", BuiltinQueryDeleteMutate, false, true},
+				{"nil", BuiltinQueryNil, false, false}, {"nil!", BuiltinQueryNilMutate, false, true},
 			} {
 				t.Run(op.name, func(t *testing.T) {
+					// Each op gets its own document: a mutating write
+					// changes it.
+					doc := mapHolding("x", lisp.Int(1))
+					doc.MapSetString("self", wrapper.wrap(doc))
 					args := []*lisp.LVal{doc, lisp.String("x")}
 					if op.set {
 						args = append(args, lisp.Int(2))
 					}
 					result := op.run(testEnv(t), lisp.QExpr(args))
+					if op.mutate {
+						require.NotEqual(t, lisp.LError, result.Type, "%v", result)
+						assert.Same(t, doc, result)
+						return
+					}
 					require.Equal(t, lisp.LError, result.Type)
 					assert.False(t, lisp.IsInternalPanic(result))
 					assert.Contains(t, result.String(), errCyclicValue.Error())

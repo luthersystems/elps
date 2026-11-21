@@ -108,19 +108,108 @@ func TestQueryGetOnPathFaultsStillError(t *testing.T) {
 	})
 }
 
-// TestWriteBuiltinsStillValidateWholeDocument pins the scope of #960: only
-// reads drop the gate. A write can copy or rebuild any part of the document,
-// so an off-path fault still refuses it.
-func TestWriteBuiltinsStillValidateWholeDocument(t *testing.T) {
-	for name, fn := range map[string]lisp.LBuiltin{"?set!": BuiltinQuerySetMutate, "?set": BuiltinQuerySet} {
+// TestCopyingWritesStillValidateWholeDocument pins the scope of #960 and
+// #1005: the copying writes keep the gate. They copy the whole document, so
+// an off-path fault still refuses them.
+func TestCopyingWritesStillValidateWholeDocument(t *testing.T) {
+	for name, fn := range map[string]lisp.LBuiltin{"?set": BuiltinQuerySet, "?del": BuiltinQueryDelete, "?nil": BuiltinQueryNil} {
 		t.Run(name, func(t *testing.T) {
 			env := testEnv(t)
 			doc := docWithFault(cyclicMap("self"))
-			got := callBuiltin(env, fn, doc, lisp.String("a"), lisp.String("b"), lisp.Int(2))
+			args := []*lisp.LVal{doc, lisp.String("a"), lisp.String("b")}
+			if name == "?set" {
+				args = append(args, lisp.Int(2))
+			}
+			got := callBuiltin(env, fn, args...)
 			require.Equal(t, lisp.LError, got.Type, "%v", got)
 			assert.Contains(t, got.String(), errCyclicValue.Error())
 		})
 	}
+}
+
+// mutatingWrites are the path-scoped writes of #1005, each as a call on
+// doc at path steps, with the value 2 where the write takes one.
+var mutatingWrites = map[string]func(env *lisp.LEnv, doc *lisp.LVal, steps ...*lisp.LVal) *lisp.LVal{
+	"?set!": func(env *lisp.LEnv, doc *lisp.LVal, steps ...*lisp.LVal) *lisp.LVal {
+		return callBuiltin(env, BuiltinQuerySetMutate, append(append([]*lisp.LVal{doc}, steps...), lisp.Int(2))...)
+	},
+	"?del!": func(env *lisp.LEnv, doc *lisp.LVal, steps ...*lisp.LVal) *lisp.LVal {
+		return callBuiltin(env, BuiltinQueryDeleteMutate, append([]*lisp.LVal{doc}, steps...)...)
+	},
+	"?nil!": func(env *lisp.LEnv, doc *lisp.LVal, steps ...*lisp.LVal) *lisp.LVal {
+		return callBuiltin(env, BuiltinQueryNilMutate, append([]*lisp.LVal{doc}, steps...)...)
+	},
+}
+
+// TestMutatingWritesIgnoreOffPathFaults pins issue #1005: a mutating write
+// changes only the container at the end of its path, so a fault elsewhere
+// in the document cannot change its answer. Before the fix every mutating
+// write validated the whole document first and refused all of these, which
+// made n writes into one document cost n whole-document walks.
+func TestMutatingWritesIgnoreOffPathFaults(t *testing.T) {
+	want := map[string]string{"?set!": "2", "?del!": "()", "?nil!": "()"}
+	for opName, write := range mutatingWrites {
+		for name, fault := range offPathFaults() {
+			t.Run(opName+"/"+name, func(t *testing.T) {
+				env := testEnv(t)
+				doc := docWithFault(fault())
+				got := write(env, doc, lisp.String("a"), lisp.String("b"))
+				require.NotEqual(t, lisp.LError, got.Type, "%v", got)
+				assert.Same(t, doc, got)
+				b := callBuiltin(env, BuiltinQueryGet, doc, lisp.String("a"), lisp.String("b"))
+				assert.Equal(t, want[opName], b.String())
+			})
+		}
+	}
+
+	t.Run("iterator", func(t *testing.T) {
+		env := testEnv(t)
+		xs := lisp.Vector([]*lisp.LVal{mapHolding("v", lisp.Int(1)), mapHolding("v", lisp.Int(2))})
+		doc := mapHolding("xs", xs)
+		doc.MapSetString("bad", cyclicMap("self"))
+		got := callBuiltin(env, BuiltinQuerySetMutate, doc, lisp.String("xs"), lisp.Symbol("*"), lisp.String("v"), lisp.Int(9))
+		require.NotEqual(t, lisp.LError, got.Type, "%v", got)
+		v := callBuiltin(env, BuiltinQueryGet, doc, lisp.String("xs"), lisp.Symbol("*"), lisp.String("v"))
+		assert.Equal(t, "(vector 9 9)", v.String())
+	})
+}
+
+// TestMutatingWritesOnPathFaultsStillError pins the other half of #1005:
+// a mutating write that steps INTO a bad shape is refused by the accessor
+// that takes the step, with an error and no panic, as a read is (#960).
+// The new value keeps its own check, because it becomes part of the
+// document.
+func TestMutatingWritesOnPathFaultsStillError(t *testing.T) {
+	faults := offPathFaults()
+	for opName, write := range mutatingWrites {
+		t.Run(opName+"/index-multi-dim-array", func(t *testing.T) {
+			doc := docWithFault(faults["multi-dim-array"]())
+			got := write(testEnv(t), doc, lisp.String("bad"), lisp.Int(0))
+			require.Equal(t, lisp.LError, got.Type, "%v", got)
+			assert.Contains(t, got.String(), "cannot index multi-dimensional array")
+			assert.NotContains(t, got.String(), "panic")
+		})
+		t.Run(opName+"/step-through-malformed-quote", func(t *testing.T) {
+			doc := docWithFault(faults["malformed-quote"]())
+			got := write(testEnv(t), doc, lisp.String("bad"), lisp.String("x"))
+			require.Equal(t, lisp.LError, got.Type, "%v", got)
+			assert.Contains(t, got.String(), "cannot index into quote at path bad")
+			assert.NotContains(t, got.String(), "panic")
+		})
+		t.Run(opName+"/step-through-go-nil-cell", func(t *testing.T) {
+			doc := mapHolding("xs", lisp.Vector([]*lisp.LVal{lisp.Int(1), nil}))
+			got := write(testEnv(t), doc, lisp.String("xs"), lisp.Int(1), lisp.String("k"))
+			require.NotNil(t, got)
+			require.Equal(t, lisp.LError, got.Type, "%v", got)
+			assert.NotContains(t, got.String(), "panic")
+		})
+	}
+
+	t.Run("?set!/bad-new-value", func(t *testing.T) {
+		got := callBuiltin(testEnv(t), BuiltinQuerySetMutate, docWithFault(lisp.Int(0)), lisp.String("a"), cyclicMap("self"))
+		require.Equal(t, lisp.LError, got.Type, "%v", got)
+		assert.Contains(t, got.String(), errCyclicValue.Error())
+	})
 }
 
 // TestValidateDocumentMatchesGate pins ValidateDocument to the gate the write
@@ -336,4 +425,25 @@ func TestNestedIteratorFailedElementYieldsNil(t *testing.T) {
 		require.NotEqual(t, lisp.LError, got.Type, "%v", got)
 		assert.Equal(t, "(vector 5)", got.String())
 	})
+}
+
+// TestMutatingIteratorSkipsGoNilElement covers a host-built vector holding
+// a Go nil element, under a mutating iterator whose path goes on past the
+// element. The whole-document gate refused such a document before #1005;
+// without it the iterator stepped into the Go nil and panicked. The element
+// is now one the rest of the path cannot step into, so it is left as it is,
+// as any failed element of an iterator write is.
+func TestMutatingIteratorSkipsGoNilElement(t *testing.T) {
+	for opName, write := range mutatingWrites {
+		t.Run(opName, func(t *testing.T) {
+			inner := lisp.Vector([]*lisp.LVal{lisp.Int(7)})
+			doc := lisp.Vector([]*lisp.LVal{nil, inner})
+			got := write(testEnv(t), doc, lisp.Symbol("*"), lisp.Int(0))
+			require.NotNil(t, got)
+			require.NotEqual(t, lisp.LError, got.Type, "%v", got)
+			_, data := doc.ArrayParts()
+			assert.Nil(t, data.Cells[0], "the Go nil element must be left alone")
+			assert.NotEqual(t, "(vector 7)", inner.String(), "the other element must be written")
+		})
+	}
 }

@@ -17,15 +17,16 @@
 // functions, are opaque leaves shared by reference. Further steps into a
 // leaf fail with its type and location. Out-of-range integer writes leave the
 // document unchanged. In-place list element edits remain unsupported.
-// The writes validate the whole document first: containers, including those
-// inside tagged and quote wrappers, must be acyclic, and arrays must be
-// one-dimensional, because a write can copy or rebuild any part of it. ? with
-// at least one step does not (#960); ? with none still does, because there is
-// no path to scope it to and embedders use it as a write gate. A read with a
-// finite path never walks beyond the containers on
-// that path (and the elements an iterator fans out over), and never recurses
-// into the value it returns, so a fault elsewhere cannot change its answer;
-// validating the whole document made every read cost O(document). The
+// The copying writes validate the whole document first: containers,
+// including those inside tagged and quote wrappers, must be acyclic, and
+// arrays must be one-dimensional, because a copying write copies every part
+// of it. ? with at least one step does not (#960), nor do the mutating
+// writes (#1005); ? with none still does, because there is no path to scope
+// it to and embedders use it as a write gate. A read or a mutating write
+// with a finite path never walks beyond the containers on that path (and
+// the elements an iterator fans out over), and never recurses into the
+// value it returns, so a fault elsewhere cannot change its answer;
+// validating the whole document made every such call cost O(document). The
 // accessors on the path refuse a bad shape they step into themselves. Opaque
 // internals are not walked.
 //
@@ -335,6 +336,25 @@ func BuiltinQueryGetNilSafe(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 
 // BuiltinQuerySetMutate implements (elpspath:?set! val &rest steps-and-value).
 // The last vararg is the new value; all preceding varargs are path steps.
+//
+// ?set!, ?del! and ?nil! run no whole-document gate
+// (luthersystems/elps#1005).  A mutating write changes one container at the
+// end of its path, or one per element under an iterator, and copies nothing.  It steps through the
+// containers on its path with the same accessors a read uses, and those
+// refuse every bad shape a step meets: an array that is not one-dimensional
+// (toCells), a tagged value or quote wrapper (indexTypeError), and a Go nil
+// cell.  A cycle off the path is never walked, and a path is finite, so a
+// cycle on it is walked one step at a time and never recursed through.  So a
+// fault off the path cannot affect the write, as #960 found for reads.
+//
+// The gate made each write cost the whole document.  A program that builds a
+// document of n entries with n writes then paid for n walks: quadratic in n,
+// 4.4 s for 5000 writes, 8 ms after the fix.  The new value is
+// still checked, because it becomes part of the document and its cost
+// follows what is written, not what is already there.
+//
+// ?set, ?del and ?nil keep the gate.  They copy the whole document anyway,
+// so the gate costs a constant factor, and the copy needs a sound graph.
 func BuiltinQuerySetMutate(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	if lerr := requireFirstArg(env, "?set!", "document", args); lerr != nil {
 		return lerr
@@ -345,9 +365,8 @@ func BuiltinQuerySetMutate(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 		return env.Errorf("?set! requires at least a value argument")
 	}
 	steps, newVal := rest[:len(rest)-1], rest[len(rest)-1]
-	if err := okSimpleType(val); err != nil {
-		return env.Error(err)
-	}
+	// No whole-document gate (#1005): see BuiltinQuerySetMutate.  The new
+	// value is still checked, at a cost that follows what is written.
 	if err := okSimpleType(newVal); err != nil {
 		return env.Error(err)
 	}
@@ -401,9 +420,7 @@ func BuiltinQueryDeleteMutate(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	}
 	val := args.Cells[0]
 	steps := args.Cells[1:]
-	if err := okSimpleType(val); err != nil {
-		return env.Error(err)
-	}
+	// No whole-document gate (#1005): see BuiltinQuerySetMutate.
 	path, err := ArgsToPath(steps)
 	if err != nil {
 		return env.Error(err)
@@ -446,9 +463,7 @@ func BuiltinQueryNilMutate(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	}
 	val := args.Cells[0]
 	steps := args.Cells[1:]
-	if err := okSimpleType(val); err != nil {
-		return env.Error(err)
-	}
+	// No whole-document gate (#1005): see BuiltinQuerySetMutate.
 	path, err := ArgsToPath(steps)
 	if err != nil {
 		return env.Error(err)
