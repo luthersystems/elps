@@ -859,7 +859,7 @@ func builtinExport(env *LEnv, args *LVal) *LVal {
 			}
 		}
 	}
-	exportArgs(pkg, args)
+	pkg.exportAll(exportArgs(nil, args))
 	return Nil()
 }
 
@@ -893,15 +893,19 @@ func validateExportArgs(env *LEnv, args *LVal, fresh *[]string) *LVal {
 	return Nil()
 }
 
-// exportArgs is the mutation pass, reached only after the entire call validates.
-func exportArgs(pkg *Package, args *LVal) {
+// exportArgs appends the names in args, nested lists included, to names in
+// argument order.  It runs only after the entire call validates, and the
+// caller adds the names in one exportAll, because adding them one at a time
+// cost O(n^2) for n names.
+func exportArgs(names []string, args *LVal) []string {
 	for _, arg := range args.Cells {
 		if arg.Type == LSExpr {
-			exportArgs(pkg, arg)
+			names = exportArgs(names, arg)
 		} else {
-			pkg.Exports(arg.Str)
+			names = append(names, arg.Str)
 		}
 	}
+	return names
 }
 
 func builtinSet(env *LEnv, v *LVal) *LVal {
