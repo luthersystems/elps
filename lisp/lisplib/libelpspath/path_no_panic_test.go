@@ -315,14 +315,12 @@ func TestPathologicalValuesNeverPanic(t *testing.T) {
 	t.Parallel()
 
 	t.Run("cycles", func(t *testing.T) {
-		// A write on a value that contains itself must be REFUSED, not
-		// walked forever and not crashed on (issue #393). Every operation,
-		// since each runs its own walk.
+		// A copying write on a value that contains itself must be
+		// REFUSED, not walked forever and not crashed on (issue #393).
+		// Every copying operation, since each runs its own walk.
 		for _, src := range []string{
 			`(let ([v (vector 1 2)]) (append! v v) (elpspath:?set v 0 9))`,
-			`(let ([v (vector 1 2)]) (append! v v) (elpspath:?set! v 0 9))`,
 			`(let ([v (vector 1 2)]) (append! v v) (elpspath:?del v 0))`,
-			`(let ([v (vector 1 2)]) (append! v v) (elpspath:?del! v '(range 0)))`,
 			`(let ([v (vector 1 2)]) (append! v v) (elpspath:?nil v '(range 0)))`,
 			`(let ([m (sorted-map "a" 1)]) (assoc! m "self" m) (elpspath:?set m "a" 9))`,
 		} {
@@ -338,13 +336,20 @@ func TestPathologicalValuesNeverPanic(t *testing.T) {
 		for _, tc := range []struct{ src, want string }{
 			{`(let ([v (vector 1 2)]) (append! v v) (elpspath:? v 2 2 2 2 0))`, "1"},
 			{`(let ([v (vector 1 2)]) (append! v v) (elpspath:? v '*))`, "(vector 1 2 (vector 1 2 #<cycle>))"},
+			// A mutating write, like a read, takes finitely many steps and
+			// copies nothing, so it answers too (#1005, which dropped the
+			// whole-document gate from mutating writes).
+			{`(let ([v (vector 1 2)]) (append! v v) (elpspath:?set! v 0 9) (elpspath:? v 0))`, "9"},
+			{`(let ([v (vector 1 2)]) (append! v v) (elpspath:?del! v '(range 0)))`, "(vector)"},
+			{`(let ([v (vector 1 2)]) (append! v v) (elpspath:?nil! v 2 2 0) (elpspath:? v 0))`, "()"},
+			{`(let ([v (vector 1 2)]) (append! v v) (elpspath:?set! v '* 0 7) (elpspath:? v 0))`, "7"},
 			// A cycle created THROUGH the operation under test.
 			{`(let ([v (vector 1 2)]) (elpspath:?set! v 0 v) (elpspath:? v 0 0 0 0))`, "(vector #<cycle> 2)"},
 		} {
 			env := noPanicEnv(t)
 			res := evalNoPanic(t, env, "cycle", tc.src)
 			if res.Type == lisp.LError || res.String() != tc.want {
-				t.Errorf("a finite read of a cyclic value must answer %s, got %v\n  %s", tc.want, res, tc.src)
+				t.Errorf("a finite read or mutating write of a cyclic value must answer %s, got %v\n  %s", tc.want, res, tc.src)
 			}
 		}
 	})

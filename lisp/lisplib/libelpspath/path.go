@@ -2160,6 +2160,13 @@ func (s *iterPath) setMutate(in *lisp.LVal, newIn *lisp.LVal, op *copyOp) (*lisp
 		if err := op.charge(1); err != nil {
 			return nil, err
 		}
+		if checkCell(item) != nil {
+			// A host-built Go nil element is an element the rest of
+			// the path cannot step into, so it is left unchanged like
+			// any other.  The whole-document gate used to refuse the
+			// document before this loop ran (#1005).
+			continue
+		}
 		_, err := setMutatePath(s.path, item, newIn, op)
 		if err != nil {
 			if op.stopped() {
@@ -2249,6 +2256,13 @@ func (s *iterPath) deleteMutate(in *lisp.LVal, op *copyOp) (*lisp.LVal, error) {
 		if err := op.charge(1); err != nil {
 			return nil, err
 		}
+		if checkCell(item) != nil {
+			// A host-built Go nil element is an element the rest of
+			// the path cannot step into, so it is left unchanged like
+			// any other.  The whole-document gate used to refuse the
+			// document before this loop ran (#1005).
+			continue
+		}
 		_, err := deleteMutatePath(s.path, item, op)
 		if err != nil {
 			if op.stopped() {
@@ -2333,6 +2347,13 @@ func (s *iterPath) nilMutate(in *lisp.LVal, op *copyOp) (*lisp.LVal, error) {
 	for _, item := range horizon {
 		if err := op.charge(1); err != nil {
 			return nil, err
+		}
+		if checkCell(item) != nil {
+			// A host-built Go nil element is an element the rest of
+			// the path cannot step into, so it is left unchanged like
+			// any other.  The whole-document gate used to refuse the
+			// document before this loop ran (#1005).
+			continue
 		}
 		_, err := nilMutatePath(s.path, item, op)
 		if err != nil {

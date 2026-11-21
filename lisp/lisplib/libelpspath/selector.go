@@ -366,10 +366,13 @@ func skipOptionMark(s string, i int) int {
 // path from one assembled by hand or by ArgsToPath, and the same seven
 // operations apply. A read (Get) needs no whole-document check: it visits
 // only the containers on its path and refuses a bad shape it steps into
-// (#960). A caller about to hand a document to a write should run
-// ValidateDocument over it first, as the write builtins do -- a write may
-// copy or rebuild any part of the document, so it needs the whole graph to
-// be sound (see okSimpleType).
+// (#960). Nor does a mutating write (SetMutate, DeleteMutate, NilMutate),
+// which copies nothing and steps through its path as a read does (#1005).
+// A caller about to hand a document to a copying write (Set, Delete, Nil)
+// should run ValidateDocument over it first, as the copying builtins do --
+// the copy walks the whole document, so it needs the whole graph to be
+// sound (see okSimpleType). Gating each mutating write that way makes it
+// cost the whole document.
 //
 // ONE WART. The jq optional-selector suffix "?" is ACCEPTED AND DISCARDED.
 // In jq, ".a?" suppresses the error a non-object .a would raise; here every

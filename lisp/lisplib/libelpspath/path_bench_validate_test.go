@@ -98,7 +98,7 @@ func BenchmarkBuiltinGetRecords(b *testing.B) {
 }
 
 // BenchmarkBuiltinSetMutateRecords measures (elpspath:?set! doc 0 "a" 1),
-// which validates the document and the new value and copies nothing.
+// which validates only the new value (#1005) and copies nothing.
 func BenchmarkBuiltinSetMutateRecords(b *testing.B) {
 	env := lisp.NewEnv(nil)
 	call := lisp.QExpr([]*lisp.LVal{validateBenchRecords(1000), lisp.Int(0), lisp.String("a"), lisp.Int(1)})
