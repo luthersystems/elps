@@ -87,6 +87,8 @@ func TestTemplatePlanFieldPolicy(t *testing.T) {
 		{reflect.TypeFor[CallStack](), map[string]string{
 			"renderLimit":      "reset: per-error output cap; instantiated runtimes capture their own policy",
 			"wraps":            "reset: WrapError's lines, set only on a raised error's stack; retained diagnostic stacks are rejected (#629)",
+			"termIdx":          "reset: live terminal-chain index built lazily during VM evaluation; never copied or published (luthersystems/elps#1009)",
+			"termWork":         "reset: work counter of the terminal-chain index paths, read only by tests (luthersystems/elps#1009)",
 			"Frames":           "reset: runtime starts empty; retained diagnostic stacks are rejected (#629)",
 			"GoStack":          "reset: source must be nil; references to its live header are rejected (#629)",
 			"MaxHeightLogical": "scalar: stack limit", "MaxHeightPhysical": "scalar: stack limit",

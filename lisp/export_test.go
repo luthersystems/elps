@@ -218,3 +218,7 @@ func ReleaseTailRecMark(r *Runtime, m *LVal)  { r.releaseTailRecMark(m) }
 
 // EvalMarksReused reports whether this build reuses trampoline marks.
 const EvalMarksReused = evalMarksReused
+
+// TerminalWork exposes CallStack.termWork, the frames that the terminal index
+// paths of TerminalFID visit, to package lisp_test (luthersystems/elps#1009).
+func TerminalWork(s *CallStack) int { return s.termWork }

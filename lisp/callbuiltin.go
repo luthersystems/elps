@@ -140,9 +140,7 @@ func (env *LEnv) CallBuiltin(b BuiltinRef, args ...*LVal) (*LVal, error) {
 		// The callee matched a terminal chain through the frame funcall or
 		// apply marked.  Go frames cannot be unwound, so make the call
 		// plainly, as a non-tail call from Lisp would.
-		if top >= 0 && top < len(stack.Frames) {
-			stack.Frames[top].Terminal = false
-		}
+		stack.restoreTerminal(top, false)
 		fun, fargs := extractMarkTailRec(val)
 		env.Runtime.releaseTailRecMark(val)
 		return valueOf(env.funCall(env.evalCtx, fun, fargs, false))

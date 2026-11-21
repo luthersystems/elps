@@ -709,7 +709,7 @@ func threadValue(env *LEnv, args *LVal, last bool) *LVal {
 		if i == len(exprs)-1 {
 			// Like builtinFunCall, the final invocation is terminal even
 			// though its arguments have already been evaluated.
-			env.Runtime.Stack.Top().Terminal = true
+			env.Runtime.Stack.setTopTerminal(true)
 		}
 		val = env.callValueFunction(fun, SExpr(cells))
 		if val.IsError() {
@@ -1129,7 +1129,7 @@ func opHandlerBind(env *LEnv, args *LVal) *LVal {
 	// We can't call opProgn because we can't mark any expressions as
 	// terminal.  If an expression were marked as terminal env might try to
 	// invoke tail recursion optimizations.
-	env.Runtime.Stack.Top().TROBlock = true
+	env.Runtime.Stack.setTopTROBlock()
 	for _, c := range forms {
 		val = env.Eval(c)
 		if val.IsError() {
@@ -1264,7 +1264,7 @@ func opWithCleanup(env *LEnv, args *LVal) *LVal {
 	// nothing in the tree pins it -- it is a guard against a future change
 	// that marks this frame terminal, which TerminalFID would then report
 	// as an inconsistent stack rather than silently skipping cleanup.
-	env.Runtime.Stack.Top().TROBlock = true
+	env.Runtime.Stack.setTopTROBlock()
 
 	// The body is an implicit progn: forms run in order and the last value
 	// is the result, with the first error abandoning the rest.
@@ -1340,7 +1340,7 @@ func opIgnoreErrors(env *LEnv, args *LVal) *LVal {
 	// We can't call opProgn because we can't mark any expressions as
 	// terminal.  If an expression were marked as terminal env might try to
 	// invoke tail recursion optimizations.
-	env.Runtime.Stack.Top().TROBlock = true
+	env.Runtime.Stack.setTopTROBlock()
 	for _, c := range args.Cells {
 		val = env.Eval(c)
 		if val.IsError() {
@@ -1381,7 +1381,7 @@ func opTry(env *LEnv, args *LVal) *LVal {
 	// unguarded last expr is evaluated the same way, as ignore-errors and
 	// handler-bind do, so that the TROBlock rule stays the same for the
 	// whole form.
-	env.Runtime.Stack.Top().TROBlock = true
+	env.Runtime.Stack.setTopTROBlock()
 	for _, c := range args.Cells[:last] {
 		val := env.Eval(c)
 		if !val.IsError() || !tryCatches(env.Runtime, val) {

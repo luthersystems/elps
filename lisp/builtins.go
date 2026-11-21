@@ -688,7 +688,7 @@ func builtinLoadString(env *LEnv, args *LVal) *LVal {
 	// share the current lexical environment.  The loaded source will share a
 	// stack but the stack frame TROBlock will prevent tail recursion
 	// optimization from unwinding the stack to/beyond this point.
-	env.Runtime.Stack.Top().TROBlock = true
+	env.Runtime.Stack.setTopTROBlock()
 	v := env.root().loadLisp(env.root().read(_name, strings.NewReader(source.Str)))
 	if v.IsError() && v.CallStack() == nil {
 		v.SetCallStack(env.Runtime.Stack.Copy())
@@ -711,7 +711,7 @@ func builtinLoadBytes(env *LEnv, args *LVal) *LVal {
 	// share the current lexical environment.  The loaded source will share a
 	// stack but the stack frame TROBlock will prevent tail recursion
 	// optimization from unwinding the stack to/beyond this point.
-	env.Runtime.Stack.Top().TROBlock = true
+	env.Runtime.Stack.setTopTROBlock()
 	v := env.root().loadLisp(env.root().read(_name, bytes.NewReader(source.Bytes())))
 	if v.IsError() && v.CallStack() == nil {
 		v.SetCallStack(env.Runtime.Stack.Copy())
@@ -729,7 +729,7 @@ func builtinLoadFile(env *LEnv, args *LVal) *LVal {
 	// share the current lexical environment.  The loaded source will share a
 	// stack but the stack frame TROBlock will prevent tail recursion
 	// optimization from unwinding the stack to/beyond this point.
-	env.Runtime.Stack.Top().TROBlock = true
+	env.Runtime.Stack.setTopTROBlock()
 	v := env.root().loadLisp(env.root().readFile(loc.Str))
 	if v.IsError() && v.CallStack() == nil {
 		v.SetCallStack(env.Runtime.Stack.Copy())
@@ -1082,7 +1082,7 @@ func builtinFunCall(env *LEnv, args *LVal) *LVal {
 	// Because funcall and apply do not actually call env.Eval they cannot use
 	// the standard method of signaling a terminal expression to the LEnv.  We
 	// need to set the flag explicitly before env.funCall is invoked
-	env.Runtime.Stack.Top().Terminal = true
+	env.Runtime.Stack.setTopTerminal(true)
 	return env.FunCall(fun, SExpr(fargs))
 }
 
@@ -1102,7 +1102,7 @@ func builtinApply(env *LEnv, args *LVal) *LVal {
 	// Because funcall and apply do not actually call env.Eval they cannot use
 	// the standard method of signaling a terminal expression to the LEnv.  We
 	// need to set the flag explicitly before FunCall is invoked.
-	env.Runtime.Stack.Top().Terminal = true
+	env.Runtime.Stack.setTopTerminal(true)
 
 	argcells := make([]*LVal, 0, len(fargs)+argtail.Len())
 	argcells = append(argcells, fargs...)

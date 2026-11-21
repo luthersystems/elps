@@ -27,6 +27,19 @@ type CallStack struct {
 	// new node and never writes one, so copies share the list.
 	wraps *wrapLine
 
+	// termIdx indexes frames below the top frame once TerminalFID walks past
+	// terminalIndexThreshold terminal frames without matching
+	// (luthersystems/elps#1009).  Short stacks leave this nil so ordinary calls
+	// allocate nothing.  Copy leaves it nil on error snapshots.
+	termIdx *terminalIndex
+
+	// Frames holds the live frames, oldest first.  While a call runs, change
+	// Frames only through CallStack methods.  Do not truncate or append to it,
+	// and do not write the FID, Terminal or TROBlock of a frame below the top.
+	// TerminalFID indexes those frames for long terminal chains
+	// (luthersystems/elps#1009).  After such a write it still never reports a
+	// chain that is not on the stack and never panics without cause, but it can
+	// miss a chain, so the call runs without tail-call optimization.
 	Frames  []CallFrame
 	GoStack []byte
 
@@ -34,6 +47,12 @@ type CallStack struct {
 	// The stack deliberately retains no context: an error outlives the request
 	// that produced it, so every renderer is handed a context by its caller.
 	renderLimit int
+
+	// termWork counts the frames that the terminal index paths of TerminalFID
+	// visit.  Only those paths write it, so ordinary calls pay nothing.  Tests
+	// read it to check that long chains cost O(1) amortized work per call
+	// without timing anything.
+	termWork int
 
 	// MaxHeightLogical bounds CallFrame.HeightLogical, which accumulates
 	// every frame elided by tail-call optimization.  Its unit is *elided
@@ -62,7 +81,10 @@ type CallStack struct {
 	MaxTailIterations int
 }
 
-// CallFrame is one frame in the CallStack
+// CallFrame is one frame in the CallStack.
+//
+// While a call runs, do not write the FID, Terminal or TROBlock of a frame
+// below the top of a live CallStack.  CallStack.Frames gives the reason.
 type CallFrame struct {
 	Source  *token.Location
 	FID     string
@@ -265,6 +287,95 @@ func sourcePos(loc *token.Location) string {
 	return loc.String()
 }
 
+// terminalIndexThreshold is the number of terminal frames below the top frame
+// that TerminalFID scans linearly before building an index.  Short terminal
+// chains stay allocation-free, while long chains amortize to O(1) per call
+// (luthersystems/elps#1009).
+const terminalIndexThreshold = 16
+
+// terminalIndex indexes a contiguous range Frames[base:end] strictly below the
+// top frame (end <= len(Frames)-1) so writes to the top frame's Terminal and
+// TROBlock flags never touch the index.
+//
+// fids maps each FID to its highest index in [base, end); prev[i-base] links
+// frame i to the previous index with the same FID, or -1.  nonTerm and tro
+// hold sorted indices in [base, end) with !Terminal and TROBlock, respectively.
+type terminalIndex struct {
+	fids    map[string]int
+	prev    []int
+	nonTerm []int
+	tro     []int
+	base    int
+	end     int
+}
+
+func (idx *terminalIndex) push(i int, f *CallFrame) {
+	prevIdx, ok := idx.fids[f.FID]
+	if !ok {
+		prevIdx = -1
+	}
+	idx.prev = append(idx.prev, prevIdx)
+	idx.fids[f.FID] = i
+	if !f.Terminal {
+		idx.nonTerm = append(idx.nonTerm, i)
+	}
+	if f.TROBlock {
+		idx.tro = append(idx.tro, i)
+	}
+	idx.end = i + 1
+}
+
+func (idx *terminalIndex) pop(frames []CallFrame) {
+	i := idx.end - 1
+	idx.end = i
+	last := len(idx.prev) - 1
+	prevIdx := idx.prev[last]
+	idx.prev = idx.prev[:last]
+	fid := frames[i].FID
+	if prevIdx >= 0 {
+		idx.fids[fid] = prevIdx
+	} else {
+		delete(idx.fids, fid)
+	}
+	if n := len(idx.nonTerm); n > 0 && idx.nonTerm[n-1] == i {
+		idx.nonTerm = idx.nonTerm[:n-1]
+	}
+	if n := len(idx.tro); n > 0 && idx.tro[n-1] == i {
+		idx.tro = idx.tro[:n-1]
+	}
+}
+
+// shrinkTerminalIndex removes indexed entries at or above newEnd.  If newEnd
+// reaches or falls below base, or if Frames was truncated directly without
+// Pop, it discards the index.
+func (s *CallStack) shrinkTerminalIndex(newEnd int) {
+	idx := s.termIdx
+	if idx == nil || newEnd >= idx.end {
+		return
+	}
+	if newEnd <= idx.base || idx.end > len(s.Frames) {
+		s.termIdx = nil
+		return
+	}
+	for idx.end > newEnd {
+		idx.pop(s.Frames)
+	}
+}
+
+// panicTROBlock prints the stack and panics when TerminalFID encounters a
+// frame that is both Terminal and TROBlock.  Keeping this cold path out of
+// TerminalFID keeps the hot scan loop small.
+//
+//go:noinline
+func (s *CallStack) panicTROBlock() {
+	// This stack frame contains critical state which cannot be collapsed even
+	// if it is a terminal call.  This is not an expected state and signals a
+	// problem with the implementation of a builtin or the primary evaluation
+	// routine.
+	_, _ = s.DebugPrint(os.Stderr)
+	log.Panicf("tail-recursion-optimization is blocked -- inconsistent stack")
+}
+
 // TerminalFID determines if a chain of terminal stack frames that ends with
 // fid (i.e. fid is a candidate for tail-recursion optimization) and returns
 // the number of frames in the shortest such chain.  If no such chain of
@@ -276,37 +387,173 @@ func sourcePos(loc *token.Location) string {
 // NOTE:  If tail-recursion optimization is working then the chain of calls
 // found by TerminalFID is unique.
 func (s *CallStack) TerminalFID(fid string) int {
-	top := s.Top()
-	if top == nil {
+	if s == nil {
 		return 0
 	}
-	for i := len(s.Frames) - 1; i >= 0; i-- {
+	n := len(s.Frames)
+	if n == 0 {
+		return 0
+	}
+	// Check the top frame directly.  The top frame stays outside termIdx so
+	// flipping Terminal during argument evaluation never updates the index.
+	top := &s.Frames[n-1]
+	if !top.Terminal {
+		return 0
+	}
+	if top.TROBlock {
+		s.panicTROBlock()
+		return 0
+	}
+	if top.FID == fid {
+		// We found the chain.  Return 1 when the top frame itself matches.
+		return 1
+	}
+	if s.termIdx != nil {
+		return s.terminalFIDIndexed(fid, n)
+	}
+	limit := max(n-1-terminalIndexThreshold, 0)
+	for i := n - 2; i >= limit; i-- {
 		if !s.Frames[i].Terminal {
-			// A non-terminal frame before finding a terminal fid frame.. no
+			// A non-terminal frame before finding a terminal fid frame.
 			return 0
 		}
 		if s.Frames[i].TROBlock {
-			// This stack frame contains critical state which cannot be
-			// collapsed even if it is a terminal call.  This is not an
-			// expected state and signals a problem with the implementation of
-			// a builtin or the primary evaluation routine.
-			_, _ = s.DebugPrint(os.Stderr)
-			// It's unclear if a panic is the correct action here.  While the
-			// existence of the TROBlock should prevent severe harm using the
-			// standard language builtins if someone wrote
-			// alternative/replacement builtins incorrectly their improper use
-			// of teminal expressions may lead to incorrect evaluation, runtime
-			// errors, or later panics.
-			log.Panicf("tail-recursion-optimization is blocked -- inconsistent stack")
+			s.panicTROBlock()
 			return 0
 		}
 		if s.Frames[i].FID == fid {
-			// We found the chain.  We want the returned length to be 1 when i
-			// is on the first iteration.
-			return len(s.Frames) - i
+			return n - i
 		}
 	}
+	if limit == 0 {
+		return 0
+	}
+	return s.terminalFIDBuildAndLookup(fid, n, limit-1)
+}
+
+// terminalFIDBuildAndLookup finishes a scan that walked past
+// terminalIndexThreshold terminal frames without matching, and indexes the
+// terminal suffix [base, n-1) on a miss so subsequent calls stay O(1).
+func (s *CallStack) terminalFIDBuildAndLookup(fid string, n, nextIdx int) int {
+	base := 0
+	for i := nextIdx; i >= 0; i-- {
+		s.termWork++
+		if !s.Frames[i].Terminal {
+			base = i + 1
+			break
+		}
+		if s.Frames[i].TROBlock {
+			s.panicTROBlock()
+			return 0
+		}
+		if s.Frames[i].FID == fid {
+			return n - i
+		}
+	}
+	count := (n - 1) - base
+	idx := &terminalIndex{
+		fids: make(map[string]int, count),
+		prev: make([]int, 0, count),
+		base: base,
+		end:  base,
+	}
+	for i := base; i < n-1; i++ {
+		s.termWork++
+		idx.push(i, &s.Frames[i])
+	}
+	s.termIdx = idx
 	return 0
+}
+
+// terminalFIDIndexed checks any unindexed frames below the top frame, extends
+// termIdx across them, and queries the active terminal suffix in O(1).
+func (s *CallStack) terminalFIDIndexed(fid string, n int) int {
+	idx := s.termIdx
+	// A direct truncation of s.Frames can leave the index past the stack.
+	// This check finds only that case.  See the Frames field for the rule.
+	if idx.end > n-1 {
+		s.termIdx = nil
+		return s.TerminalFID(fid)
+	}
+	for i := n - 2; i >= idx.end; i-- {
+		s.termWork++
+		if !s.Frames[i].Terminal {
+			// When a long nested terminal chain sits above a non-terminal
+			// frame, extend the index across both so calls in the nested chain
+			// stay O(1) without losing the outer indexed range.
+			if (n-2)-i >= terminalIndexThreshold {
+				for j := idx.end; j < n-1; j++ {
+					s.termWork++
+					idx.push(j, &s.Frames[j])
+				}
+			}
+			return 0
+		}
+		if s.Frames[i].TROBlock {
+			s.panicTROBlock()
+			return 0
+		}
+		if s.Frames[i].FID == fid {
+			return n - i
+		}
+	}
+	for j := idx.end; j < n-1; j++ {
+		s.termWork++
+		idx.push(j, &s.Frames[j])
+	}
+	// If an external write marked frame base-1 terminal, the true suffix now
+	// starts below base; rebuild on the retry.
+	if len(idx.nonTerm) == 0 && idx.base > 0 && s.Frames[idx.base-1].Terminal {
+		s.termIdx = nil
+		return s.TerminalFID(fid)
+	}
+	start := idx.base
+	if len(idx.nonTerm) > 0 {
+		start = idx.nonTerm[len(idx.nonTerm)-1] + 1
+	}
+	troIdx := -1
+	if len(idx.tro) > 0 {
+		if t := idx.tro[len(idx.tro)-1]; t >= start {
+			troIdx = t
+		}
+	}
+	matchIdx := -1
+	if m, ok := idx.fids[fid]; ok && m >= start {
+		matchIdx = m
+	}
+	if matchIdx > troIdx {
+		// Check the chain before it is returned.  An embedder can write
+		// Frames directly, and a wrong count would make the caller collapse
+		// frames that are not a chain.  The caller unwinds the same frames,
+		// so the check adds no asymptotic cost.
+		if s.terminalChainAt(fid, n, matchIdx) {
+			return n - matchIdx
+		}
+		s.termIdx = nil
+		return s.TerminalFID(fid)
+	}
+	if troIdx >= start {
+		// Rescan without the index so that only a real TROBlock frame
+		// panics.  The linear scan panics again or returns the true answer.
+		s.termIdx = nil
+		return s.TerminalFID(fid)
+	}
+	return 0
+}
+
+// terminalChainAt reports whether Frames[m:n] is the shortest terminal chain
+// that ends with fid, as the linear scan in TerminalFID finds it.  The caller
+// already checked the top frame, Frames[n-1].
+func (s *CallStack) terminalChainAt(fid string, n, m int) bool {
+	s.termWork += (n - 1) - m
+	for i := n - 2; i > m; i-- {
+		f := &s.Frames[i]
+		if !f.Terminal || f.TROBlock || f.FID == fid {
+			return false
+		}
+	}
+	f := &s.Frames[m]
+	return f.Terminal && !f.TROBlock && f.FID == fid
 }
 
 // PushFID pushes a new stack frame with the given FID onto s.
@@ -320,6 +567,10 @@ func (s *CallStack) PushFID(src *token.Location, fid string, pkg string, name st
 		return err
 	}
 	n := len(s.Frames)
+	// Discard a stale index if an embedder truncated s.Frames without Pop.
+	if s.termIdx != nil && s.termIdx.end >= n {
+		s.termIdx = nil
+	}
 	if n < cap(s.Frames) {
 		s.Frames = s.Frames[:n+1]
 	} else {
@@ -417,7 +668,8 @@ func (s *CallStack) Pop() CallFrame {
 		// either.  An empty stack here means a push/pop pair was separated.
 		panic("pop called on an empty stack")
 	}
-	top := &s.Frames[len(s.Frames)-1]
+	topIdx := len(s.Frames) - 1
+	top := &s.Frames[topIdx]
 	f := *top
 	// Clear the pointers field by field, so that the slot keeps nothing
 	// alive, for the reason PushFID writes its fields one by one.  PushFID
@@ -426,7 +678,10 @@ func (s *CallStack) Pop() CallFrame {
 	top.FID = ""
 	top.Package = ""
 	top.Name = ""
-	s.Frames = s.Frames[:len(s.Frames)-1]
+	s.Frames = s.Frames[:topIdx]
+	if s.termIdx != nil && s.termIdx.end >= topIdx {
+		s.shrinkTerminalIndex(topIdx - 1)
+	}
 	return f
 }
 
@@ -484,6 +739,58 @@ func (e *TailIterationLimitError) Error() string {
 		" WithMaxTailIterations)", e.Iterations)
 }
 
+// setTopTerminal sets the top frame's Terminal flag.  The top frame stays
+// outside termIdx, so an in-bounds index needs no update.
+func (s *CallStack) setTopTerminal(terminal bool) {
+	if s == nil {
+		return
+	}
+	n := len(s.Frames)
+	if n == 0 {
+		return
+	}
+	s.Frames[n-1].Terminal = terminal
+	if s.termIdx != nil && s.termIdx.end >= n {
+		s.termIdx = nil
+	}
+}
+
+// clearTopTerminal clears the top frame's Terminal flag and reports whether it
+// was set.  It returns false when the stack is nil or empty.
+func (s *CallStack) clearTopTerminal() bool {
+	if s == nil {
+		return false
+	}
+	n := len(s.Frames)
+	if n == 0 {
+		return false
+	}
+	f := &s.Frames[n-1]
+	if !f.Terminal {
+		return false
+	}
+	f.Terminal = false
+	if s.termIdx != nil && s.termIdx.end >= n {
+		s.termIdx = nil
+	}
+	return true
+}
+
+// setTopTROBlock marks the top frame as blocking tail-recursion optimization.
+func (s *CallStack) setTopTROBlock() {
+	if s == nil {
+		return
+	}
+	n := len(s.Frames)
+	if n == 0 {
+		return
+	}
+	s.Frames[n-1].TROBlock = true
+	if s.termIdx != nil && s.termIdx.end >= n {
+		s.termIdx = nil
+	}
+}
+
 // holdNonTerminal clears the top frame's terminal mark while Go code calls
 // Lisp, and returns what restoreTerminal needs to put it back.  funcall and
 // apply mark the top frame terminal so a callee's tail call can reuse it, but
@@ -498,6 +805,9 @@ func (s *CallStack) holdNonTerminal() (int, bool) {
 	top := len(s.Frames) - 1
 	terminal := s.Frames[top].Terminal
 	s.Frames[top].Terminal = false
+	if s.termIdx != nil && s.termIdx.end > top {
+		s.shrinkTerminalIndex(top)
+	}
 	return top, terminal
 }
 
@@ -505,5 +815,8 @@ func (s *CallStack) holdNonTerminal() (int, bool) {
 func (s *CallStack) restoreTerminal(top int, terminal bool) {
 	if top >= 0 && top < len(s.Frames) {
 		s.Frames[top].Terminal = terminal
+		if s.termIdx != nil && top < s.termIdx.end {
+			s.shrinkTerminalIndex(top)
+		}
 	}
 }
