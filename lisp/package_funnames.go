@@ -132,13 +132,10 @@ func (pkg *Package) FirstNameOf(fn *LVal) (string, bool, int) {
 	if fd == nil {
 		return "", false, 0
 	}
-	names := pkg.namesOfFID(fd.fid)
-	for i := range names.len() {
-		if name := names.at(i); pkg.bindingIsFun(name, fd) {
-			return name, true, i + 1
-		}
-	}
-	return "", false, names.len()
+	m := pkg.namesOfFID(fd.fid).firstMatch(func(name string) bool {
+		return pkg.bindingIsFun(name, fd)
+	})
+	return m.name, m.ok, m.read
 }
 
 // FunNameByFID returns the first name, in sorted order, under which pkg
@@ -160,19 +157,22 @@ func (pkg *Package) FunNameByFID(fid string) (string, bool) {
 //
 //nolint:revive // the read count is for tests; the exported form returns two results
 func (pkg *Package) funNameByFID(fid string) (string, bool, int) {
-	names := pkg.namesOfFID(fid)
-	for i := range names.len() {
-		name := names.at(i)
-		id := pkg.bindingIdentity(name)
-		if id.ok && id.funType == LFunNone && id.data != nil && id.data.fid == fid && id.data.pkg == pkg.Name {
-			return name, true, i + 1
-		}
-	}
-	return "", false, names.len()
+	m := pkg.namesOfFID(fid).firstMatch(func(name string) bool {
+		return pkg.bindingMatchesFID(name, fid)
+	})
+	return m.name, m.ok, m.read
 }
 
-// namesOfFID returns, in sorted order, the names under which pkg binds a
-// function with the FID fid.  It allocates nothing.
+// bindingMatchesFID reports whether name binds a regular function defined by
+// pkg with the given FID.
+func (pkg *Package) bindingMatchesFID(name, fid string) bool {
+	id := pkg.bindingIdentity(name)
+	return id.ok && id.funType == LFunNone && id.data != nil && id.data.fid == fid && id.data.pkg == pkg.Name
+}
+
+// namesOfFID returns a view of the names under which pkg binds a function
+// with the FID fid.  The view reads them in sorted order (firstMatch).  It
+// allocates nothing.
 func (pkg *Package) namesOfFID(fid string) fidNameView {
 	if pkg.base != nil {
 		return fidIndex{over: pkg.slotFidNames, base: pkg.base.fidNames}.view(fid)
@@ -181,17 +181,18 @@ func (pkg *Package) namesOfFID(fid string) fidNameView {
 }
 
 // settledFIDs returns an unfrozen package's index, live.  The first lookup
-// of an index that is not live applies its pending writes to a copy and
-// stores the copy, live, atomically in place of the index, so a reader
-// never writes an index another reader can see (issue #397): a reader that
-// loses the race uses the winner's copy, which holds the same lists.  The
-// copy is made once per index: a live index takes its writes at once.
+// of an index that is not live applies its pending writes to a private copy
+// and stores the copy, live, atomically in place of the index, so a reader
+// never writes an index another reader can see (luthersystems/elps#397).
+// A reader that loses the race uses the winner's copy, which holds the same
+// names.  The copy is made once per index: a live index takes its writes at
+// once.
 func (pkg *Package) settledFIDs() *fidIndex {
 	idx := pkg.fidIndex()
 	if idx.live {
 		return idx
 	}
-	settled := &fidIndex{base: idx.base, over: maps.Clone(idx.over), pending: slices.Clone(idx.pending)}
+	settled := &fidIndex{base: idx.base, over: cloneFIDOverlay(idx.over), pending: slices.Clone(idx.pending)}
 	settled.apply()
 	settled.pending = nil
 	settled.live = true
@@ -201,35 +202,335 @@ func (pkg *Package) settledFIDs() *fidIndex {
 	return pkg.loadFIDs()
 }
 
-// fidNameView is one FID's name list in an index: names from the overlay,
-// or the pairs lo to hi of base.
+// cloneFIDOverlay returns a copy of over with private copies of any mutable
+// name sets, so settledFIDs never mutates a set another concurrent reader
+// can still read.
+func cloneFIDOverlay(over map[string]fidNames) map[string]fidNames {
+	if len(over) == 0 {
+		return nil
+	}
+	out := make(map[string]fidNames, len(over))
+	for fid, entry := range over {
+		if entry.set != nil {
+			entry.set = entry.set.clone()
+		}
+		out[fid] = entry
+	}
+	return out
+}
+
+// fidNameView is one FID's names in an index: a large set from the overlay,
+// a small sorted slice from the overlay, or the sorted span lo..hi of base.
 type fidNameView struct {
+	set    *fidNameSet
 	names  []string
 	base   packagetable.Lists
 	lo, hi int
 }
 
+// len returns the number of names in v.
 func (v fidNameView) len() int {
+	if v.set != nil {
+		return len(v.set.heap)
+	}
 	if v.names != nil {
 		return len(v.names)
 	}
 	return v.hi - v.lo
 }
 
+// at returns the name at sorted position i of a slice or base view.  A set
+// view keeps its names in heap order, so at panics for it: use firstMatch.
 func (v fidNameView) at(i int) string {
+	if v.set != nil {
+		panic("lisp: fidNameView.at called on a set view; use firstMatch")
+	}
 	if v.names != nil {
 		return v.names[i]
 	}
 	return v.base.ValueAt(v.lo + i)
 }
 
-// fidIndex is a package's FID index: for each FID, the sorted names under
-// which the package binds a function with that FID.  over holds the lists
-// written since base was taken; an entry there, even an empty one, replaces
-// base's list.  A list is never written in place, so an index may share a
-// list with another.
+// fidMatch is the result of a firstMatch lookup.
+type fidMatch struct {
+	// name is the first name, in sorted order, that matches.
+	name string
+	// read is the number of names the lookup read: the 1-based rank of
+	// name, or the number of names when none matches.
+	read int
+	// ok reports that a name matches.
+	ok bool
+}
+
+// firstMatch returns the first name of v, in sorted order, for which match
+// is true, and the number of names it read.
+func (v fidNameView) firstMatch(match func(string) bool) fidMatch {
+	if v.set != nil {
+		return v.set.firstMatch(match)
+	}
+	n := v.len()
+	for i := range n {
+		if name := v.at(i); match(name) {
+			return fidMatch{name: name, ok: true, read: i + 1}
+		}
+	}
+	return fidMatch{read: n}
+}
+
+// fidSetThreshold is the largest sorted slice one FID keeps before switching
+// to a fidNameSet.  Keeping small FIDs in a short slice avoids per-FID map
+// overhead while stopping O(n^2) copying when many bindings share one FID
+// (luthersystems/elps#1010).
+const fidSetThreshold = 16
+
+// fidNames holds one FID's names in an overlay map.  At most fidSetThreshold
+// names live in list (a sorted, never-mutated slice); larger FIDs promote to
+// set.
+type fidNames struct {
+	set  *fidNameSet
+	list []string
+}
+
+func (n fidNames) len() int {
+	if n.set != nil {
+		return len(n.set.heap)
+	}
+	return len(n.list)
+}
+
+// fidNameSet stores a FID's names as an indexed binary min-heap once the
+// binding count passes fidSetThreshold.  pos maps each name to its heap
+// slot, so membership, insertion and deletion run in O(log n) time and
+// heap[0] always holds the smallest name for O(1) pure reads.
+//
+// A FID that has a set keeps it when its names drop back to
+// fidSetThreshold or fewer.  The set goes only when its last name goes.
+// So a set's memory is bounded by the peak number of names of its FID.
+type fidNameSet struct {
+	pos  map[string]int
+	heap []string
+}
+
+// adoptSortedFIDNameSet builds a set from a strictly increasing, caller-owned
+// slice.  A sorted slice already satisfies the min-heap invariant.
+func adoptSortedFIDNameSet(sorted []string) *fidNameSet {
+	pos := make(map[string]int, len(sorted))
+	for i, name := range sorted {
+		pos[name] = i
+	}
+	return &fidNameSet{pos: pos, heap: sorted}
+}
+
+// newFIDNameSetFromSorted copies a strictly increasing slice into a new set
+// with room for at least capacity names.
+func newFIDNameSetFromSorted(sorted []string, capacity int) *fidNameSet {
+	heap := make([]string, len(sorted), max(len(sorted), capacity))
+	copy(heap, sorted)
+	return adoptSortedFIDNameSet(heap)
+}
+
+// newFIDNameSetFromBase builds a set from the sorted span [lo, hi) of base.
+func newFIDNameSetFromBase(base packagetable.Lists, lo, hi, extraCap int) *fidNameSet {
+	n := hi - lo
+	heap := make([]string, n, n+extraCap)
+	pos := make(map[string]int, n+extraCap)
+	for i := range n {
+		name := base.ValueAt(lo + i)
+		heap[i] = name
+		pos[name] = i
+	}
+	return &fidNameSet{pos: pos, heap: heap}
+}
+
+func (s *fidNameSet) clone() *fidNameSet {
+	return &fidNameSet{
+		pos:  maps.Clone(s.pos),
+		heap: slices.Clone(s.heap),
+	}
+}
+
+func (s *fidNameSet) add(name string) {
+	if _, ok := s.pos[name]; ok {
+		return
+	}
+	i := len(s.heap)
+	s.heap = append(s.heap, name)
+	s.pos[name] = i
+	s.siftUp(i)
+}
+
+func (s *fidNameSet) remove(name string) {
+	i, ok := s.pos[name]
+	if !ok {
+		return
+	}
+	delete(s.pos, name)
+	last := len(s.heap) - 1
+	if i == last {
+		s.heap[last] = ""
+		s.heap = s.heap[:last]
+		return
+	}
+	moved := s.heap[last]
+	s.heap[last] = ""
+	s.heap = s.heap[:last]
+	s.heap[i] = moved
+	s.pos[moved] = i
+	if !s.siftDown(i) {
+		s.siftUp(i)
+	}
+}
+
+func (s *fidNameSet) siftUp(i int) {
+	for i > 0 {
+		p := (i - 1) / 2
+		if s.heap[p] <= s.heap[i] {
+			break
+		}
+		s.swap(i, p)
+		i = p
+	}
+}
+
+func (s *fidNameSet) siftDown(i int) bool {
+	start := i
+	n := len(s.heap)
+	for {
+		left := 2*i + 1
+		if left >= n {
+			break
+		}
+		smallest := left
+		if right := left + 1; right < n && s.heap[right] < s.heap[left] {
+			smallest = right
+		}
+		if s.heap[i] <= s.heap[smallest] {
+			break
+		}
+		s.swap(i, smallest)
+		i = smallest
+	}
+	return i > start
+}
+
+func (s *fidNameSet) swap(i, j int) {
+	s.heap[i], s.heap[j] = s.heap[j], s.heap[i]
+	s.pos[s.heap[i]] = i
+	s.pos[s.heap[j]] = j
+}
+
+// firstMatch returns the first name of s, in sorted order, for which match
+// is true, and the number of names it read, as fidNameView.firstMatch does.
+// It reads heap[0], the smallest name, before it starts a walk.
+func (s *fidNameSet) firstMatch(match func(string) bool) fidMatch {
+	n := len(s.heap)
+	if n == 0 {
+		return fidMatch{}
+	}
+	if match(s.heap[0]) {
+		return fidMatch{name: s.heap[0], ok: true, read: 1}
+	}
+	if n == 1 {
+		return fidMatch{read: 1}
+	}
+	return s.walkMatch(match)
+}
+
+// walkMatch is firstMatch after heap[0] does not match.  It walks the heap
+// in sorted order without changing it.
+//
+// frontier holds the heap indexes whose parents the walk has read, as a
+// min-heap by name, so its top is the next name in sorted order.  A match
+// at rank r costs O(r log r) time, and frontier holds at most r+1 indexes.
+// frontier lives in this call, because a published or settled index is
+// read by many goroutines at once and a reader must not write it
+// (luthersystems/elps#397).  It starts in the stack array buf, so a match
+// within the first len(buf) ranks allocates nothing.
+func (s *fidNameSet) walkMatch(match func(string) bool) fidMatch {
+	n := len(s.heap)
+	var buf [128]int
+	frontier := append(buf[:0], 1)
+	if n > 2 {
+		frontier = s.pushFrontier(frontier, 2)
+	}
+	for read := 2; ; read++ {
+		i := frontier[0]
+		if name := s.heap[i]; match(name) {
+			return fidMatch{name: name, ok: true, read: read}
+		}
+		if read == n {
+			return fidMatch{read: n}
+		}
+		// i leaves the frontier and its children join it.  The left child
+		// takes i's place at the top, which saves one sift.
+		left := 2*i + 1
+		if left >= n {
+			frontier = s.popFrontier(frontier)
+			continue
+		}
+		frontier[0] = left
+		s.siftFrontier(frontier)
+		if right := left + 1; right < n {
+			frontier = s.pushFrontier(frontier, right)
+		}
+	}
+}
+
+// pushFrontier adds heap index i to frontier, a min-heap of heap indexes
+// ordered by name.
+func (s *fidNameSet) pushFrontier(frontier []int, i int) []int {
+	frontier = append(frontier, i)
+	j := len(frontier) - 1
+	for j > 0 {
+		p := (j - 1) / 2
+		if s.heap[frontier[p]] <= s.heap[frontier[j]] {
+			break
+		}
+		frontier[p], frontier[j] = frontier[j], frontier[p]
+		j = p
+	}
+	return frontier
+}
+
+// popFrontier removes the top of frontier, a min-heap of heap indexes
+// ordered by name.
+func (s *fidNameSet) popFrontier(frontier []int) []int {
+	last := len(frontier) - 1
+	frontier[0] = frontier[last]
+	frontier = frontier[:last]
+	s.siftFrontier(frontier)
+	return frontier
+}
+
+// siftFrontier moves the top of frontier down until frontier is a min-heap
+// of heap indexes ordered by name again.
+func (s *fidNameSet) siftFrontier(frontier []int) {
+	n := len(frontier)
+	j := 0
+	for {
+		left := 2*j + 1
+		if left >= n {
+			return
+		}
+		smallest := left
+		if right := left + 1; right < n && s.heap[frontier[right]] < s.heap[frontier[left]] {
+			smallest = right
+		}
+		if s.heap[frontier[j]] <= s.heap[frontier[smallest]] {
+			return
+		}
+		frontier[j], frontier[smallest] = frontier[smallest], frontier[j]
+		j = smallest
+	}
+}
+
+// fidIndex is a package's FID index: for each FID, the names under which
+// the package binds a function with that FID.  over holds entries written
+// since base was taken; an entry there, even an empty one, replaces base's
+// list.  Small slices in over are never written in place; large sets are
+// owned by their index and cloned in settledFIDs before mutation.
 type fidIndex struct {
-	over map[string][]string
+	over map[string]fidNames
 	base packagetable.Lists
 	// spare backs the one-name lists insert makes, so a run of writes
 	// that each bind a new function (a use-package import loop binds one
@@ -281,11 +582,113 @@ func (idx *fidIndex) record(w fidWrite) {
 
 // write applies one write to idx in place.
 func (idx *fidIndex) write(w fidWrite) {
-	if w.add {
-		idx.set(w.fid, idx.insert(idx.list(w.fid), w.name))
-	} else {
-		idx.set(w.fid, removeSortedName(idx.list(w.fid), w.name))
+	if entry, ok := idx.over[w.fid]; ok {
+		if entry.set != nil {
+			if w.add {
+				entry.set.add(w.name)
+			} else {
+				entry.set.remove(w.name)
+				if len(entry.set.heap) == 0 {
+					idx.set(w.fid, fidNames{})
+				}
+			}
+			return
+		}
+		if w.add {
+			if len(entry.list) == 0 {
+				idx.set(w.fid, fidNames{list: idx.insert(nil, w.name)})
+				return
+			}
+			i, found := slices.BinarySearch(entry.list, w.name)
+			if found {
+				return
+			}
+			if len(entry.list) >= fidSetThreshold {
+				s := newFIDNameSetFromSorted(entry.list, len(entry.list)+1)
+				s.add(w.name)
+				idx.set(w.fid, fidNames{set: s})
+				return
+			}
+			idx.set(w.fid, fidNames{list: insertSortedNameAt(entry.list, i, w.name)})
+		} else {
+			next := removeSortedName(entry.list, w.name)
+			if len(next) == len(entry.list) {
+				return
+			}
+			idx.set(w.fid, fidNames{list: next})
+		}
+		return
 	}
+
+	lo, hi := idx.base.Span(w.fid)
+	n := hi - lo
+	if n == 0 {
+		if !w.add {
+			return
+		}
+		idx.set(w.fid, fidNames{list: idx.insert(nil, w.name)})
+		return
+	}
+	pos, found := baseSearchName(idx.base, lo, hi, w.name)
+	if w.add == found {
+		return
+	}
+	if n > fidSetThreshold || (w.add && n == fidSetThreshold) {
+		extra := 0
+		if w.add {
+			extra = 1
+		}
+		s := newFIDNameSetFromBase(idx.base, lo, hi, extra)
+		if w.add {
+			s.add(w.name)
+		} else {
+			s.remove(w.name)
+		}
+		idx.set(w.fid, fidNames{set: s})
+		return
+	}
+	if w.add {
+		names := make([]string, 0, n+1)
+		for j := range pos {
+			names = append(names, idx.base.ValueAt(lo+j))
+		}
+		names = append(names, w.name)
+		for j := pos; j < n; j++ {
+			names = append(names, idx.base.ValueAt(lo+j))
+		}
+		idx.set(w.fid, fidNames{list: names})
+		return
+	}
+	if n == 1 {
+		idx.set(w.fid, fidNames{})
+		return
+	}
+	names := make([]string, 0, n-1)
+	for j := range pos {
+		names = append(names, idx.base.ValueAt(lo+j))
+	}
+	for j := pos + 1; j < n; j++ {
+		names = append(names, idx.base.ValueAt(lo+j))
+	}
+	idx.set(w.fid, fidNames{list: names})
+}
+
+// baseSearchName searches base's sorted span [lo, hi) for name and returns
+// its offset from lo (or insertion offset) and whether it is present.
+func baseSearchName(base packagetable.Lists, lo, hi int, name string) (int, bool) {
+	start := lo
+	for lo < hi {
+		mid := lo + (hi-lo)/2
+		v := base.ValueAt(mid)
+		if v < name {
+			lo = mid + 1
+		} else if v > name {
+			hi = mid
+		} else {
+			return mid - start, true
+		}
+	}
+	return lo - start, false
 }
 
 // apply applies the pending writes to idx in place.  Only a writer, or a
@@ -298,38 +701,32 @@ func (idx *fidIndex) apply() {
 	idx.pending = idx.pending[:0]
 }
 
-// view returns the list of fid.
+// view returns a read-only view of fid's names.
 func (idx fidIndex) view(fid string) fidNameView {
-	if names, ok := idx.over[fid]; ok {
-		return fidNameView{names: names[:len(names):len(names)]}
+	if entry, ok := idx.over[fid]; ok {
+		if entry.set != nil {
+			return fidNameView{set: entry.set}
+		}
+		return fidNameView{names: entry.list[:len(entry.list):len(entry.list)]}
 	}
 	lo, hi := idx.base.Span(fid)
 	return fidNameView{base: idx.base, lo: lo, hi: hi}
 }
 
-// list returns the list of fid.  The caller may keep it but never writes
-// it in place.
-func (idx *fidIndex) list(fid string) []string {
-	if names, ok := idx.over[fid]; ok {
-		return names
-	}
-	return slices.Collect(idx.base.List(fid))
-}
-
-// set stores the list of fid.  An empty list stays as an entry while base
-// has a list for fid, so it hides that list.
-func (idx *fidIndex) set(fid string, names []string) {
-	if len(names) == 0 {
-		names = nil
+// set stores the entry for fid.  An empty entry stays in over while base has
+// a list for fid, so it hides that list.
+func (idx *fidIndex) set(fid string, entry fidNames) {
+	if entry.len() == 0 {
+		entry = fidNames{}
 		if idx.base.ListLen(fid) == 0 {
 			delete(idx.over, fid)
 			return
 		}
 	}
 	if idx.over == nil {
-		idx.over = make(map[string][]string, 1)
+		idx.over = make(map[string]fidNames, 1)
 	}
-	idx.over[fid] = names
+	idx.over[fid] = entry
 }
 
 // pairs returns the index as fresh (FID, name) pairs, one allocation.
@@ -340,8 +737,8 @@ func (idx *fidIndex) pairs() []packagetable.Pair {
 			n++
 		}
 	}
-	for _, names := range idx.over {
-		n += len(names)
+	for _, entry := range idx.over {
+		n += entry.len()
 	}
 	if n == 0 {
 		return nil
@@ -352,8 +749,14 @@ func (idx *fidIndex) pairs() []packagetable.Pair {
 			out = append(out, p)
 		}
 	}
-	for fid, names := range idx.over {
-		for _, name := range names {
+	for fid, entry := range idx.over {
+		if entry.set != nil {
+			for _, name := range entry.set.heap {
+				out = append(out, packagetable.Pair{Key: fid, Value: name})
+			}
+			continue
+		}
+		for _, name := range entry.list {
 			out = append(out, packagetable.Pair{Key: fid, Value: name})
 		}
 	}
@@ -376,14 +779,24 @@ func (pkg *Package) fidIndex() *fidIndex {
 	if idx := pkg.loadFIDs(); idx != nil {
 		return idx
 	}
-	over := make(map[string][]string)
+	over := make(map[string]fidNames)
 	for name, v := range pkg.symbols {
 		if fid, isFun := pkg.symbolFID(name, v); isFun {
-			over[fid] = append(over[fid], name)
+			entry := over[fid]
+			entry.list = append(entry.list, name)
+			over[fid] = entry
 		}
 	}
-	for _, names := range over {
-		slices.Sort(names)
+	for fid, entry := range over {
+		if len(entry.list) <= 1 {
+			continue
+		}
+		slices.Sort(entry.list)
+		if len(entry.list) > fidSetThreshold {
+			over[fid] = fidNames{set: adoptSortedFIDNameSet(entry.list)}
+		} else {
+			over[fid] = fidNames{list: entry.list[:len(entry.list):len(entry.list)]}
+		}
 	}
 	idx := &fidIndex{over: over, live: true}
 	if atomic.CompareAndSwapPointer(pkg.fidsPointer(), nil, unsafe.Pointer(idx)) { //nolint:gosec // idx is a *fidIndex, the type of pkg.fids
@@ -483,16 +896,13 @@ func (pkg *Package) slotFID(i int) (string, bool) {
 	return identityFID(pkg.slotIdentity(i))
 }
 
-// setSlotFIDNames stores the name list of fid in this VM's overlay.  An
-// empty list is kept as an entry, so it hides the base's list.
-func (pkg *Package) setSlotFIDNames(fid string, names []string) {
-	if pkg.slotFidNames == nil {
-		pkg.slotFidNames = make(map[string][]string, 1)
-	}
-	if len(names) == 0 {
-		names = nil
-	}
-	pkg.slotFidNames[fid] = names
+// setSlotFIDNames applies one FID index write to this VM's overlay of a
+// frozen package.  An empty entry stays in the map while base has a list for
+// fid, so it hides the base list.
+func (pkg *Package) setSlotFIDNames(w fidWrite) {
+	idx := fidIndex{base: pkg.base.fidNames, over: pkg.slotFidNames}
+	idx.write(w)
+	pkg.slotFidNames = idx.over
 }
 
 // fidNameLists returns pkg's FID index as a table for template
@@ -552,6 +962,11 @@ func insertSortedName(names []string, name string) []string {
 	if found {
 		return names
 	}
+	return insertSortedNameAt(names, i, name)
+}
+
+// insertSortedNameAt returns a new slice with name inserted at index i.
+func insertSortedNameAt(names []string, i int, name string) []string {
 	out := make([]string, 0, len(names)+1)
 	out = append(out, names[:i]...)
 	out = append(out, name)

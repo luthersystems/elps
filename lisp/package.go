@@ -241,10 +241,9 @@ type Package struct {
 	// table by thaw, so function naming matches an unfrozen package exactly.
 	slotFunNames map[string]string
 	// slotFidNames is this VM's overlay on base.fidNames while the package
-	// is frozen: for each FID a slot write changed, the whole name list,
-	// which replaces the base's list.  It is nil until the first such
-	// write and is merged into the private table by thaw.
-	slotFidNames map[string][]string
+	// is frozen.  Each entry replaces the base list for its FID.  It is nil
+	// until the first slot write and moves into fids.over on thaw.
+	slotFidNames map[string]fidNames
 	Name         string
 	Doc          string
 	externals    []string
@@ -912,13 +911,21 @@ func (pkg *Package) putName(name string, v *LVal) {
 	}
 	pkg.ensureWritable()
 	if idx := pkg.fids; idx != nil {
+		var oldFID string
+		var hadFun bool
 		if old, ok := pkg.symbols[name]; ok {
-			if fid, isFun := pkg.symbolFID(name, old); isFun {
-				idx.record(fidWrite{fid: fid, name: name})
-			}
+			oldFID, hadFun = pkg.symbolFID(name, old)
 		}
 		if v.Type == LFun {
-			idx.record(fidWrite{fid: v.FID(), name: name, add: true})
+			fid := v.FID()
+			if !hadFun || oldFID != fid {
+				if hadFun {
+					idx.record(fidWrite{fid: oldFID, name: name})
+				}
+				idx.record(fidWrite{fid: fid, name: name, add: true})
+			}
+		} else if hadFun {
+			idx.record(fidWrite{fid: oldFID, name: name})
 		}
 	}
 	if v.Type == LFun {
@@ -947,12 +954,15 @@ func (pkg *Package) putSlot(name string, v *LVal) bool {
 	if !ok {
 		return false
 	}
-	if fid, isFun := pkg.slotFID(i); isFun {
-		pkg.setSlotFIDNames(fid, removeSortedName(pkg.frozenFIDIndex().list(fid), name))
-	}
+	oldFID, hadFun := pkg.slotFID(i)
 	if v.Type == LFun {
 		fid := v.FID()
-		pkg.setSlotFIDNames(fid, insertSortedName(pkg.frozenFIDIndex().list(fid), name))
+		if !hadFun || oldFID != fid {
+			if hadFun {
+				pkg.setSlotFIDNames(fidWrite{fid: oldFID, name: name})
+			}
+			pkg.setSlotFIDNames(fidWrite{fid: fid, name: name, add: true})
+		}
 		if prev, ok := pkg.base.funNames.Lookup(fid); ok && prev == name {
 			delete(pkg.slotFunNames, fid)
 		} else {
@@ -964,6 +974,8 @@ func (pkg *Package) putSlot(name string, v *LVal) bool {
 		if v.Package() == pkg.Name {
 			v.funData().name = name // see funData.name
 		}
+	} else if hadFun {
+		pkg.setSlotFIDNames(fidWrite{fid: oldFID, name: name})
 	}
 	pkg.ensureBaseValues()
 	if pkg.lazy.inst != nil && pkg.baseValues[i] == nil && pkg.lazy.base.bindings[i].value.index != 0 {
