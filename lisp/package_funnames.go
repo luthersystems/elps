@@ -132,10 +132,22 @@ func (pkg *Package) FirstNameOf(fn *LVal) (string, bool, int) {
 	if fd == nil {
 		return "", false, 0
 	}
-	m := pkg.namesOfFID(fd.fid).firstMatch(func(name string) bool {
-		return pkg.bindingIsFun(name, fd)
-	})
-	return m.name, m.ok, m.read
+	names := pkg.namesOfFID(fd.fid)
+	if names.set != nil {
+		m := names.set.firstMatch(func(name string) bool {
+			return pkg.bindingIsFun(name, fd)
+		})
+		return m.name, m.ok, m.read
+	}
+	// A short list is read with a direct loop, not through firstMatch: a
+	// closure call per name made this hot lookup about 15% slower
+	// (BenchmarkFirstNameLookup).
+	for i := range names.len() {
+		if name := names.at(i); pkg.bindingIsFun(name, fd) {
+			return name, true, i + 1
+		}
+	}
+	return "", false, names.len()
 }
 
 // FunNameByFID returns the first name, in sorted order, under which pkg
@@ -157,10 +169,20 @@ func (pkg *Package) FunNameByFID(fid string) (string, bool) {
 //
 //nolint:revive // the read count is for tests; the exported form returns two results
 func (pkg *Package) funNameByFID(fid string) (string, bool, int) {
-	m := pkg.namesOfFID(fid).firstMatch(func(name string) bool {
-		return pkg.bindingMatchesFID(name, fid)
-	})
-	return m.name, m.ok, m.read
+	names := pkg.namesOfFID(fid)
+	if names.set != nil {
+		m := names.set.firstMatch(func(name string) bool {
+			return pkg.bindingMatchesFID(name, fid)
+		})
+		return m.name, m.ok, m.read
+	}
+	// A direct loop, as in FirstNameOf.
+	for i := range names.len() {
+		if name := names.at(i); pkg.bindingMatchesFID(name, fid) {
+			return name, true, i + 1
+		}
+	}
+	return "", false, names.len()
 }
 
 // bindingMatchesFID reports whether name binds a regular function defined by
