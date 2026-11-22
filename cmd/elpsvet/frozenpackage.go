@@ -33,6 +33,7 @@ var packageWriteFunctions = map[string]string{
 	"Package.Export":                     "passes ensureWritable (which thaws a frozen package) before appending exports",
 	"Package.Exports":                    "passes ensureWritable (which thaws a frozen package) before merging and sorting exports",
 	"Package.exportSorted":               "passes ensureWritable (which thaws a frozen package) before inserting a sorted export",
+	"Package.exportAll":                  "passes ensureWritable (which thaws a frozen package) before merging new names into the sorted exports",
 	"Package.putSlot":                    "calls ensureBaseValues before rebinding an existing frozen name in this VM's own slot and slotFunNames overlay; shared descriptors and tables are never written",
 	"Package.setSlotFIDNames":            "writes this VM's own slotFidNames overlay of a frozen package (called from putSlot); shared tables are never written",
 	"Package.ensureBaseValues":           "allocates private slot storage and copies shared references from immutable descriptors on the first fill or write; never lends or writes the descriptor backing",

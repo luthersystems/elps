@@ -709,7 +709,7 @@ func threadValue(env *LEnv, args *LVal, last bool) *LVal {
 		if i == len(exprs)-1 {
 			// Like builtinFunCall, the final invocation is terminal even
 			// though its arguments have already been evaluated.
-			env.Runtime.Stack.Top().Terminal = true
+			env.Runtime.Stack.setTopTerminal(true)
 		}
 		val = env.callValueFunction(fun, SExpr(cells))
 		if val.IsError() {
@@ -1044,7 +1044,7 @@ func opLetSeq(env *LEnv, args *LVal) *LVal {
 		// that created a closure; every other binding goes into the scope it
 		// would have shared anyway, which is exactly the flat let* of before.
 		if env.Runtime.closuresCreated() != before {
-			letenv = newEnvN(letenv, len(bindlist.Cells)-i)
+			letenv = newEnvN(letenv, splitScopeHint(len(bindlist.Cells)-i))
 		}
 		lerr := letenv.Put(bind.Cells[0], val)
 		if lerr.IsError() {
@@ -1071,9 +1071,23 @@ func letSeqPattern(letenv *LEnv, bind *LVal, room int) (*LEnv, *LVal) {
 		return letenv, lerr
 	}
 	if letenv.Runtime.closuresCreated() != before {
-		letenv = newEnvN(letenv, room)
+		letenv = newEnvN(letenv, splitScopeHint(room))
 	}
 	return letenv, putBinds(letenv, binds)
+}
+
+// splitScopeHint is the size hint for the scope a let* opens after an
+// initializer that created a closure.  room is the number of bindings left,
+// but only the ones up to the next closure land in the new scope, and in a
+// run of closure bindings that is one each.  Sizing every split scope for
+// all of room made n closure bindings allocate scopes for n, n-1, n-2, ...
+// names, O(n^2) memory, and a room past scopeMapThreshold made each one an
+// eager map.  Capping the hint at scopeMapThreshold keeps the exact size for
+// a short let* and a slice-backed scope otherwise; a scope that does get
+// more bindings grows, and moves into a map past the threshold, as any
+// scope does.
+func splitScopeHint(room int) int {
+	return min(room, scopeMapThreshold)
 }
 
 func opProgn(env *LEnv, args *LVal) *LVal {
@@ -1115,7 +1129,7 @@ func opHandlerBind(env *LEnv, args *LVal) *LVal {
 	// We can't call opProgn because we can't mark any expressions as
 	// terminal.  If an expression were marked as terminal env might try to
 	// invoke tail recursion optimizations.
-	env.Runtime.Stack.Top().TROBlock = true
+	env.Runtime.Stack.setTopTROBlock()
 	for _, c := range forms {
 		val = env.Eval(c)
 		if val.IsError() {
@@ -1250,7 +1264,7 @@ func opWithCleanup(env *LEnv, args *LVal) *LVal {
 	// nothing in the tree pins it -- it is a guard against a future change
 	// that marks this frame terminal, which TerminalFID would then report
 	// as an inconsistent stack rather than silently skipping cleanup.
-	env.Runtime.Stack.Top().TROBlock = true
+	env.Runtime.Stack.setTopTROBlock()
 
 	// The body is an implicit progn: forms run in order and the last value
 	// is the result, with the first error abandoning the rest.
@@ -1326,7 +1340,7 @@ func opIgnoreErrors(env *LEnv, args *LVal) *LVal {
 	// We can't call opProgn because we can't mark any expressions as
 	// terminal.  If an expression were marked as terminal env might try to
 	// invoke tail recursion optimizations.
-	env.Runtime.Stack.Top().TROBlock = true
+	env.Runtime.Stack.setTopTROBlock()
 	for _, c := range args.Cells {
 		val = env.Eval(c)
 		if val.IsError() {
@@ -1367,7 +1381,7 @@ func opTry(env *LEnv, args *LVal) *LVal {
 	// unguarded last expr is evaluated the same way, as ignore-errors and
 	// handler-bind do, so that the TROBlock rule stays the same for the
 	// whole form.
-	env.Runtime.Stack.Top().TROBlock = true
+	env.Runtime.Stack.setTopTROBlock()
 	for _, c := range args.Cells[:last] {
 		val := env.Eval(c)
 		if !val.IsError() || !tryCatches(env.Runtime, val) {
