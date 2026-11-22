@@ -81,3 +81,44 @@ func TestListsOwnership(t *testing.T) {
 		t.Fatal("zero table not empty")
 	}
 }
+
+func TestListsSpanBounds(t *testing.T) {
+	many := make([]string, 500)
+	for i := range many {
+		many[i] = string(rune('a'+i/26)) + string(rune('a'+i%26))
+	}
+	table := packagetable.NewLists(map[string][]string{
+		"b-one":   {"x"},
+		"d-two":   {"x", "y"},
+		"f-many":  many,
+		"h-one":   {"z"},
+		"j-three": {"p", "q", "r"},
+	})
+	want := map[string][]string{
+		"a-before": nil,
+		"b-one":    {"x"},
+		"c-mid":    nil,
+		"d-two":    {"x", "y"},
+		"e-mid":    nil,
+		"f-many":   many,
+		"g-mid":    nil,
+		"h-one":    {"z"},
+		"i-mid":    nil,
+		"j-three":  {"p", "q", "r"},
+		"z-after":  nil,
+	}
+	for key, wantVals := range want {
+		lo, hi := table.Span(key)
+		if hi-lo != len(wantVals) || table.ListLen(key) != len(wantVals) {
+			t.Fatalf("key %q: span [%d,%d) len %d, want %d", key, lo, hi, table.ListLen(key), len(wantVals))
+		}
+		for i, w := range wantVals {
+			if got := table.ValueAt(lo + i); got != w {
+				t.Fatalf("key %q[%d] = %q, want %q", key, i, got, w)
+			}
+			if got := table.At(key, i); got != w {
+				t.Fatalf("At(%q, %d) = %q, want %q", key, i, got, w)
+			}
+		}
+	}
+}

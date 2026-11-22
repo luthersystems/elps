@@ -688,7 +688,7 @@ func builtinLoadString(env *LEnv, args *LVal) *LVal {
 	// share the current lexical environment.  The loaded source will share a
 	// stack but the stack frame TROBlock will prevent tail recursion
 	// optimization from unwinding the stack to/beyond this point.
-	env.Runtime.Stack.Top().TROBlock = true
+	env.Runtime.Stack.setTopTROBlock()
 	v := env.root().loadLisp(env.root().read(_name, strings.NewReader(source.Str)))
 	if v.IsError() && v.CallStack() == nil {
 		v.SetCallStack(env.Runtime.Stack.Copy())
@@ -711,7 +711,7 @@ func builtinLoadBytes(env *LEnv, args *LVal) *LVal {
 	// share the current lexical environment.  The loaded source will share a
 	// stack but the stack frame TROBlock will prevent tail recursion
 	// optimization from unwinding the stack to/beyond this point.
-	env.Runtime.Stack.Top().TROBlock = true
+	env.Runtime.Stack.setTopTROBlock()
 	v := env.root().loadLisp(env.root().read(_name, bytes.NewReader(source.Bytes())))
 	if v.IsError() && v.CallStack() == nil {
 		v.SetCallStack(env.Runtime.Stack.Copy())
@@ -729,7 +729,7 @@ func builtinLoadFile(env *LEnv, args *LVal) *LVal {
 	// share the current lexical environment.  The loaded source will share a
 	// stack but the stack frame TROBlock will prevent tail recursion
 	// optimization from unwinding the stack to/beyond this point.
-	env.Runtime.Stack.Top().TROBlock = true
+	env.Runtime.Stack.setTopTROBlock()
 	v := env.root().loadLisp(env.root().readFile(loc.Str))
 	if v.IsError() && v.CallStack() == nil {
 		v.SetCallStack(env.Runtime.Stack.Copy())
@@ -859,7 +859,7 @@ func builtinExport(env *LEnv, args *LVal) *LVal {
 			}
 		}
 	}
-	exportArgs(pkg, args)
+	pkg.exportAll(exportArgs(nil, args))
 	return Nil()
 }
 
@@ -893,15 +893,19 @@ func validateExportArgs(env *LEnv, args *LVal, fresh *[]string) *LVal {
 	return Nil()
 }
 
-// exportArgs is the mutation pass, reached only after the entire call validates.
-func exportArgs(pkg *Package, args *LVal) {
+// exportArgs appends the names in args, nested lists included, to names in
+// argument order.  It runs only after the entire call validates, and the
+// caller adds the names in one exportAll, because adding them one at a time
+// cost O(n^2) for n names.
+func exportArgs(names []string, args *LVal) []string {
 	for _, arg := range args.Cells {
 		if arg.Type == LSExpr {
-			exportArgs(pkg, arg)
+			names = exportArgs(names, arg)
 		} else {
-			pkg.Exports(arg.Str)
+			names = append(names, arg.Str)
 		}
 	}
+	return names
 }
 
 func builtinSet(env *LEnv, v *LVal) *LVal {
@@ -1078,7 +1082,7 @@ func builtinFunCall(env *LEnv, args *LVal) *LVal {
 	// Because funcall and apply do not actually call env.Eval they cannot use
 	// the standard method of signaling a terminal expression to the LEnv.  We
 	// need to set the flag explicitly before env.funCall is invoked
-	env.Runtime.Stack.Top().Terminal = true
+	env.Runtime.Stack.setTopTerminal(true)
 	return env.FunCall(fun, SExpr(fargs))
 }
 
@@ -1098,7 +1102,7 @@ func builtinApply(env *LEnv, args *LVal) *LVal {
 	// Because funcall and apply do not actually call env.Eval they cannot use
 	// the standard method of signaling a terminal expression to the LEnv.  We
 	// need to set the flag explicitly before FunCall is invoked.
-	env.Runtime.Stack.Top().Terminal = true
+	env.Runtime.Stack.setTopTerminal(true)
 
 	argcells := make([]*LVal, 0, len(fargs)+argtail.Len())
 	argcells = append(argcells, fargs...)

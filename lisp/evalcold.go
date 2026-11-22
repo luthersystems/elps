@@ -114,7 +114,7 @@ func (env *LEnv) panicTailRecInArgs(ctx context.Context, mark *LVal) {
 // back the location env had when the call form's evaluation began.
 func (env *LEnv) restoreAfterArgs(loc *token.Location, resetTerminal bool) {
 	if resetTerminal {
-		env.Runtime.Stack.Top().Terminal = true
+		env.Runtime.Stack.setTopTerminal(true)
 	}
 	env.loc = loc
 }

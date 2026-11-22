@@ -160,12 +160,21 @@ func comparePairs(a, b Pair) int {
 
 // span returns the bounds of key's pairs.
 func (l Lists) span(key string) (int, int) {
-	lo, _ := slices.BinarySearchFunc(l.pairs, key, func(p Pair, k string) int { return strings.Compare(p.Key, k) })
-	hi := lo
-	for hi < len(l.pairs) && l.pairs[hi].Key == key {
-		hi++
+	lo, found := slices.BinarySearchFunc(l.pairs, key, func(p Pair, k string) int { return strings.Compare(p.Key, k) })
+	if !found {
+		return lo, lo
 	}
-	return lo, hi
+	if lo+1 >= len(l.pairs) || l.pairs[lo+1].Key != key {
+		return lo, lo + 1
+	}
+	// Binary search the upper bound so a key with many entries stays O(log n).
+	relHi, _ := slices.BinarySearchFunc(l.pairs[lo+1:], key, func(p Pair, k string) int {
+		if p.Key <= k {
+			return -1
+		}
+		return 1
+	})
+	return lo, lo + 1 + relHi
 }
 
 // Len returns the number of keys.
