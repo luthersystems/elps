@@ -39,10 +39,12 @@ import (
 // Get answers () for them, but () is not a value of the document, and no
 // step can enter it.
 //
-// A range whose window holds a Go nil cell passes on nothing. Path.Get
-// returns such a window as it stands, but the read builtins refuse it
-// (the ? family through getPath, and an embedder's builtin such as
-// substrate's v1 get), so Visit follows the builtins here.
+// A range passes on its window without scanning it, as Path.Get returns
+// it. A Go nil cell in the window passes on nothing when a later step reads
+// it: a key or index on it selects nothing, and '* skips it. Visit does not
+// scan the window for nil cells, as the ? family does: that scan costs the
+// width of the window on each visit, so over a shared value a walk that
+// visits W windows of width W does W*W work for about 3*W visits.
 //
 // Visit counts the values each segment applies to, not the values the last
 // segment selects. A '* as the last step is one visit, of the list it runs
@@ -151,13 +153,10 @@ func appendSelected(out []*lisp.LVal, v *lisp.LVal, step Path) []*lisp.LVal {
 			out = append(out, x)
 		}
 	case *rangePath:
-		// The window, refused when it holds a Go nil cell, as the read
-		// builtins refuse it (getPath with copyOp.checkReadCells). The
-		// window is a list or one-dimensional vector, like its source.
+		// The window, unscanned; see Visit. It is a list or
+		// one-dimensional vector, like its source.
 		if w, err := s.Get(v); err == nil {
-			if cells, _ := w.SeqCells(); checkCells(cells) == nil {
-				out = append(out, w)
-			}
+			out = append(out, w)
 		}
 	case *iterPath:
 		// The iterator itself; the chain it holds is the later steps.
