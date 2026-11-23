@@ -224,6 +224,12 @@ func getPath(p Path, in *lisp.LVal, op *copyOp) (*lisp.LVal, error) {
 			return out, err
 		}
 		// The window aliases the source's cells; see copyOp.checkReadCells.
+		// An empty window on a list is the empty list, which is nil.  It
+		// holds no cells to refuse, so return it as Path.Get does;
+		// toCells would refuse it as "first argument is nil".
+		if out.IsNil() {
+			return out, nil
+		}
 		cells, cerr := toCells(out)
 		if cerr != nil {
 			return nil, cerr

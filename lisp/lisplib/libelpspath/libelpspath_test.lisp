@@ -52,6 +52,20 @@
   (elpspath:?set! val '(range 2) (vector 90 91))
   (assert-equal (vector 1 2 90 91) val))
 
+; An empty window on a list is the empty list, which is nil.  The checked
+; read scans the window for Go nil cells.  It refused the empty list as
+; "first argument is nil".  A vector's empty window read fine, and Path.Get
+; returns nil.  An empty window holds no cells to refuse.
+(test "? an empty range window on a list reads as nil"
+  (assert-nil (elpspath:? '(1 2 3) '(range 1 1)))
+  (assert-nil (elpspath:? '(1 2 3) '(range 3)))
+  (assert-nil (elpspath:? (sorted-map "a" '(1 2)) "a" '(range 2 2)))
+  (assert-equal (vector) (elpspath:? (vector 1 2 3) '(range 1 1)))
+  (assert-equal '(2) (elpspath:? '(1 2 3) '(range 1 2)))
+  ; ?? and an iterator step take the same checked read.
+  (assert-nil (elpspath:?? '(1 2 3) '(range 1 1)))
+  (assert-equal '(() ()) (elpspath:? '((1 2) (3 4)) '* '(range 1 1))))
+
 ; An empty list is nil, but as a range replacement it is the empty splice,
 ; the same as (vector). Both the copying and the in-place set accept it
 ; (luthersystems/elps#998).
