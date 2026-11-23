@@ -49,6 +49,12 @@ func frontierCounts(t testing.TB, doc *lisp.LVal, sel string) []int {
 	if err != nil {
 		t.Fatalf("SelectorSteps(%q): %v", sel, err)
 	}
+	return frontierStepCounts(t, doc, steps)
+}
+
+// frontierStepCounts is frontierCounts over the steps ArgsToPath takes.
+func frontierStepCounts(t testing.TB, doc *lisp.LVal, steps []*lisp.LVal) []int {
+	t.Helper()
 	counts := make([]int, len(steps))
 	frontier := []*lisp.LVal{doc}
 	for i, step := range steps {
@@ -84,8 +90,11 @@ func frontierCounts(t testing.TB, doc *lisp.LVal, sel string) []int {
 						next = append(next, c)
 					}
 				}
-			default: // a range: its window
-				next = append(next, got)
+			default: // a range: its window, unless it holds a Go nil cell
+				cells, _ := got.SeqCells()
+				if !slices.Contains(cells, nil) {
+					next = append(next, got)
+				}
 			}
 		}
 		frontier = next
@@ -94,7 +103,7 @@ func frontierCounts(t testing.TB, doc *lisp.LVal, sel string) []int {
 }
 
 // appendStepCounts is the count of luthersystems/substrate's appendStep, the
-// copy of the step rules that Visit replaces (substrate#1144). It is copied
+// copy of the step rules that Visit replaces (luthersystems/substrate#1144). It is copied
 // here so that every input on which Visit counts differently is listed in
 // TestVisitDiffersFromSubstrateCopy.
 func appendStepCounts(doc *lisp.LVal, steps []*lisp.LVal) []int {
@@ -241,7 +250,7 @@ var visitSelectors = []string{
 	".grid[0].x", ".grid[].x", ".grid[0:1][]", ".lists[][-1].x", ".lists[][5].x",
 	// keys and iterators over odd shapes
 	".nilval[]", ".nilval.x", ".nilval[0]", ".err.x", ".err[]", ".nilcell[].x",
-	".nilcell[1].x", ".nilcell[0:3][]", ".sym[]", ".byname[].x", ".byname[][]",
+	".nilcell[1].x", ".nilcell[0:3][]", ".nilcell[0:3][].x", ".nilcell[2:3][].x", ".sym[]", ".byname[].x", ".byname[][]",
 	".[].x", ".[][].x.y", ".items[].ys[].x",
 }
 
@@ -295,6 +304,9 @@ const (
 	// An index that lands on a Go nil cell: Get refuses it; the copy passes
 	// the cell on and counts it.
 	diffNilCellIndex = "index on a nil cell"
+	// A range window that holds a Go nil cell: the read builtins refuse it,
+	// and so does Visit; the copy passes the window on.
+	diffNilCellRange = "range window holds a nil cell"
 )
 
 // TestVisitDiffersFromSubstrateCopy lists every document and selector of
@@ -354,6 +366,8 @@ func TestVisitDiffersFromSubstrateCopy(t *testing.T) {
 		"odd .err[]":            {diffErrValue, false},
 		"odd .nilcell[].x":      {diffNilCellIter, true},
 		"odd .nilcell[1].x":     {diffNilCellIndex, false},
+		"odd .nilcell[0:3][]":   {diffNilCellRange, false},
+		"odd .nilcell[0:3][].x": {diffNilCellRange, true},
 	}
 	seen := map[string]bool{}
 	for dname, doc := range visitDocs() {
@@ -503,5 +517,142 @@ func TestVisitMemoryBounded(t *testing.T) {
 				t.Errorf("Visit allocated %d bytes per call, want at most %d", n, limit)
 			}
 		})
+	}
+}
+
+// composedCase is a Path built with Chain, Iter and Root, and the flat
+// steps Get treats it as, or nil when Visit must refuse it.
+type composedCase struct {
+	name  string
+	path  libelpspath.Path
+	steps []*lisp.LVal
+}
+
+func composedCases(t *testing.T) []composedCase {
+	t.Helper()
+	parsed := func(sel string) libelpspath.Path {
+		p, err := libelpspath.ParseSelector(sel)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	key := lisp.String
+	idx := func(i int) *lisp.LVal { return lisp.Int(i) }
+	iter := lisp.Symbol("*")
+	rng := func(from, to int) *lisp.LVal {
+		return lisp.QExpr([]*lisp.LVal{lisp.Symbol("range"), lisp.Int(from), lisp.Int(to)})
+	}
+	return []composedCase{
+		{"chain", libelpspath.Chain(libelpspath.Dot("items"), libelpspath.Iter(), libelpspath.Dot("x")),
+			[]*lisp.LVal{key("items"), iter, key("x")}},
+		{"iter-holds-steps", libelpspath.Iter(libelpspath.Dot("ys"), libelpspath.Iter()),
+			[]*lisp.LVal{iter, key("ys"), iter}},
+		{"nested-chains", libelpspath.Chain(
+			libelpspath.Chain(libelpspath.Dot("items"), libelpspath.Iter()),
+			libelpspath.Chain(libelpspath.Dot("ys"), libelpspath.Iter())),
+			[]*lisp.LVal{key("items"), iter, key("ys"), iter}},
+		{"iter-in-iter", libelpspath.Chain(libelpspath.Dot("items"),
+			libelpspath.Iter(libelpspath.Dot("ys"), libelpspath.Iter(libelpspath.Index(0)))),
+			[]*lisp.LVal{key("items"), iter, key("ys"), iter, idx(0)}},
+		{"iter-then-chain", libelpspath.Chain(libelpspath.Iter(libelpspath.Dot("x")), libelpspath.Dot("y")),
+			[]*lisp.LVal{iter, key("x"), key("y")}},
+		{"range-iter-iter", libelpspath.Chain(libelpspath.Dot("lists"), libelpspath.Range(0, 2, false),
+			libelpspath.Iter(), libelpspath.Iter()),
+			[]*lisp.LVal{key("lists"), rng(0, 2), iter, iter}},
+		{"triple-iter", libelpspath.Iter(libelpspath.Iter(libelpspath.Iter())),
+			[]*lisp.LVal{iter, iter, iter}},
+		{"root-outside", libelpspath.Root(libelpspath.Chain(libelpspath.Dot("items"), libelpspath.Iter())),
+			[]*lisp.LVal{key("items"), iter}},
+		{"root-root", libelpspath.Root(libelpspath.Root(libelpspath.Dot("items"))),
+			[]*lisp.LVal{key("items")}},
+		{"root-last", libelpspath.Chain(libelpspath.Dot("items"),
+			libelpspath.Root(libelpspath.Chain(libelpspath.Iter(), libelpspath.Dot("x")))),
+			[]*lisp.LVal{key("items"), iter, key("x")}},
+		{"parsed-last", libelpspath.Chain(libelpspath.Dot("lists"), parsed(".[][0]")),
+			[]*lisp.LVal{key("lists"), iter, idx(0)}},
+		// Get runs a Root with steps after it as one unit.
+		{"root-then-key", libelpspath.Chain(parsed(".a[]"), libelpspath.Dot("b")), nil},
+		{"root-then-iter", libelpspath.Chain(libelpspath.Root(libelpspath.Dot("items")), libelpspath.Iter()), nil},
+		{"root-in-iter", libelpspath.Iter(libelpspath.Root(libelpspath.Iter(libelpspath.Dot("x"))), libelpspath.Dot("y")), nil},
+		{"root-mid", libelpspath.Chain(libelpspath.Dot("items"), libelpspath.Root(libelpspath.Dot("a")), libelpspath.Index(0)), nil},
+	}
+}
+
+// TestVisitComposedPathsFollowGet pins that Visit groups the steps of a
+// path built with Chain, Iter and Root as Get does. For each path it
+// accepts, Get answers what the flat path of its steps answers, so the
+// grouping is the flat one, and Visit counts what the frontier counts over
+// those steps. A path whose Root has steps after it is refused before any
+// visit.
+func TestVisitComposedPathsFollowGet(t *testing.T) {
+	docs := visitDocs()
+	docs["ab"] = lisp.MapOf("a", lisp.Cells{
+		lisp.MapOf("b", lisp.MapOf("c", 1)),
+		lisp.MapOf("b", lisp.MapOf("c", 1)),
+	}.SExpr())
+	// Get's answers are compared as text, so skip the documents whose
+	// answers contain themselves.
+	delete(docs, "cyclic")
+	delete(docs, "shared-dag")
+	answer := func(p libelpspath.Path, doc *lisp.LVal) string {
+		got, err := p.Get(doc)
+		if err != nil {
+			return "error: " + err.Error()
+		}
+		return got.String()
+	}
+	for _, c := range composedCases(t) {
+		for dname, doc := range docs {
+			calls := 0
+			counts := map[int]int{}
+			err := libelpspath.Visit(c.path, doc, func(segment int) error {
+				calls++
+				counts[segment]++
+				return nil
+			})
+			if c.steps == nil {
+				if err == nil {
+					t.Errorf("%s %s: Visit accepted a Root with steps after it", c.name, dname)
+				}
+				if calls != 0 {
+					t.Errorf("%s %s: Visit called visit %d times before it refused", c.name, dname, calls)
+				}
+				continue
+			}
+			if err != nil {
+				t.Errorf("%s %s: %v", c.name, dname, err)
+				continue
+			}
+			flat, err := libelpspath.ArgsToPath(c.steps)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if g, f := answer(c.path, doc), answer(flat, doc); g != f {
+				t.Errorf("%s %s: Get answers %s, flat steps answer %s", c.name, dname, g, f)
+			}
+			want := frontierStepCounts(t, doc, c.steps)
+			got := make([]int, len(want))
+			for seg, n := range counts {
+				if seg >= len(got) {
+					t.Fatalf("%s %s: segment %d past %d steps", c.name, dname, seg, len(got))
+				}
+				got[seg] = n
+			}
+			if !slices.Equal(got, want) {
+				t.Errorf("%s %s: Visit counts %v, frontier counts %v", c.name, dname, got, want)
+			}
+		}
+	}
+	// Why a Root with steps after it is refused: Get runs the key on the
+	// Root's whole answer, a list, and refuses it, where a flat walk would
+	// reach both "b" values.
+	for _, c := range composedCases(t) {
+		if c.name != "root-then-key" {
+			continue
+		}
+		if _, err := c.path.Get(docs["ab"]); err == nil {
+			t.Errorf("%s: Get succeeded; want it to refuse the key on the Root's answer", c.name)
+		}
 	}
 }
