@@ -1320,7 +1320,7 @@ func (s *dotPath) lookup(in *lisp.LVal) (*lisp.LVal, error) {
 		if err != nil {
 			return nil, err
 		}
-		v, ok := mmap.Get(lisp.String(s.key))
+		v, ok := mmap.GetString(s.key)
 		if !ok {
 			return nil, nil
 		}

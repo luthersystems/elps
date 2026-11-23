@@ -98,6 +98,17 @@ func (md *MapData) Get(key *LVal) (*LVal, bool) {
 	return md.mapBacking.Get(key)
 }
 
+// GetString is Get for a string or symbol key given as its spelling.  It
+// builds no key value, so a caller that looks up a fixed key in many maps,
+// such as a path step, allocates nothing per lookup.
+func (md *MapData) GetString(k string) (*LVal, bool) {
+	v, ok := md.getString(k)
+	if !ok {
+		return nil, false
+	}
+	return v, true
+}
+
 // Set associates key with val.  A map with no backing has nowhere to put it,
 // and reporting that is the only honest answer: silently dropping the write
 // would let a program believe an entry exists.
