@@ -1295,6 +1295,22 @@ func Dot(key string) Path {
 }
 
 func (s *dotPath) Get(in *lisp.LVal) (*lisp.LVal, error) {
+	v, err := s.lookup(in)
+	if err != nil {
+		return nil, err
+	}
+	if v == nil {
+		return lisp.Nil(), nil
+	}
+	return v, nil
+}
+
+// lookup is the read behind Get. It returns a Go nil, and no error, when
+// the map lacks the key, where Get answers (). Visit needs to tell the two
+// apart, because a missing key is not a value of the document. The nil
+// cannot be a value the map holds: checkCell refuses one. Get and Visit
+// share this one function, so they cannot disagree on what a key selects.
+func (s *dotPath) lookup(in *lisp.LVal) (*lisp.LVal, error) {
 	if in.IsNil() {
 		return nil, errors.New("first argument is nil")
 	}
@@ -1304,14 +1320,14 @@ func (s *dotPath) Get(in *lisp.LVal) (*lisp.LVal, error) {
 		if err != nil {
 			return nil, err
 		}
-		v, ok := mmap.Get(lisp.String(s.key))
-		if ok {
-			if err := checkCell(v); err != nil {
-				return nil, err
-			}
-			return v, nil
+		v, ok := mmap.GetString(s.key)
+		if !ok {
+			return nil, nil
 		}
-		return lisp.Nil(), nil
+		if err := checkCell(v); err != nil {
+			return nil, err
+		}
+		return v, nil
 	default:
 		return nil, indexTypeError(in, "first argument is not a map")
 	}
@@ -1432,13 +1448,27 @@ func Index(index int) Path {
 }
 
 func (s *indexPath) Get(in *lisp.LVal) (*lisp.LVal, error) {
+	v, err := s.lookup(in)
+	if err != nil {
+		return nil, err
+	}
+	if v == nil {
+		return lisp.Nil(), nil
+	}
+	return v, nil
+}
+
+// lookup is the read behind Get. It returns a Go nil, and no error, when
+// the index lands outside the sequence, where Get answers (). It is shared
+// with Visit; see dotPath.lookup.
+func (s *indexPath) lookup(in *lisp.LVal) (*lisp.LVal, error) {
 	cells, err := toCells(in)
 	if err != nil {
 		return nil, err
 	}
 	index, ok := resolveIndex(len(cells), s.index)
 	if !ok {
-		return lisp.Nil(), nil
+		return nil, nil
 	}
 	if err := checkCell(cells[index]); err != nil {
 		return nil, err
