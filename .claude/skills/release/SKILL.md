@@ -62,15 +62,17 @@ confirm main is what you intend to ship and its CI is green:
 gh run list --branch main --limit 3   # or the Actions API if gh is absent
 ```
 
-`make release-notes` previews the same information locally (latest tag, CI
-status, commits since the tag, and the "Breaking changes" section) when
-`gh` is available.
+`make release-notes` prints a local preview when `gh` is available: the
+latest tag, CI status, commits and merged PRs since the tag, and the exact
+"Breaking changes" section. Its list of changes is approximate. Use a
+`dry_run` to see the exact notes.
 
 **Waived API breaks.** `bash scripts/api-breaks-since.sh <lasttag>` prints
 every `scripts/api-breaks.txt` entry added since the last stable tag -- the
 breaking changes the API break gate (luthersystems/elps#761) let through.
 `scripts/release-notes-extra.sh` lists each under "Breaking changes" in the
-notes; check they are there on a `dry_run`. After the release ships, delete those entries (a follow-up PR).
+notes; check they are there on a `dry_run`. After the release ships, delete
+those entries (a follow-up PR).
 
 ### 3. Update the VS Code extension changelog (if applicable)
 
@@ -107,11 +109,11 @@ The pipeline is the org's shared release workflow
 newer than the latest tag of its major, the commit not released yet), that
 the run's commit is GitHub's live main, and that `CI Tests` passed on it; and
 writes the notes. With `notes: changes`, the shared workflow writes one
-line per change on main since the last tag, with no cap. Then it appends the
-output of `scripts/release-notes-extra.sh`: the "Breaking changes" section,
-one bullet per waived API break. A failure of that script fails the
-release. On a validation failure it
-stops with an error and creates nothing. Claude then runs one exact command,
+line per commit on main's first-parent history since the last tag, with no
+cap. Then it appends the output of `scripts/release-notes-extra.sh`: the
+"Breaking changes" section, one bullet per waived API break. A failure of
+that script fails the release. On a validation failure it stops with an
+error and creates nothing. Claude then runs one exact command,
 `gh release create … --target <commit>`, with the App token; a hook denies
 any other tool call. A last step checks that the release exists and that its
 tag resolves to the validated commit. The agent transcript is uploaded as the

@@ -22,11 +22,14 @@ name: Release (tag)
 # Marketplace. Treat a release as externally visible at once.
 #
 # notes: changes makes the shared workflow write the list of changes: one
-# line per change on main since the previous tag, with no cap. It replaced
-# elps's own copy of that list, which stopped at 200 changes. The "Breaking
-# changes" section stays here, in scripts/release-notes-extra.sh, because only
-# elps has scripts/api-breaks.txt. It lists every API break override added
-# since the previous tag.
+# line per commit on main's first-parent history since the previous tag,
+# with no cap. It replaced elps's own copy of that list, which stopped at 200
+# changes. The shared workflow reads its notes script from
+# luthersystems/.github at v1 when the step runs, not from the SHA pinned
+# below. The "Breaking changes" section stays here, in
+# scripts/release-notes-extra.sh, because only elps has
+# scripts/api-breaks.txt. It lists every API break override added since the
+# previous tag.
 
 on:
   workflow_dispatch:

@@ -389,7 +389,7 @@ release-notes:
 	@echo ""
 	@# The section release-tag.yml adds after the shared list of changes.
 	@echo "--- Breaking changes section (scripts/release-notes-extra.sh) ---"
-	@out=$$(LAST_TAG="$(filter-out none,$(LATEST_TAG))" bash scripts/release-notes-extra.sh); \
+	@out=$$(LAST_TAG="$(filter-out none,$(LATEST_TAG))" bash scripts/release-notes-extra.sh) || exit 1; \
 	if [ -n "$$out" ]; then echo "$$out"; else echo "(none)"; fi
 	@echo ""
 	@echo "--- Merged PRs since $(LATEST_TAG) ---"
