@@ -21,8 +21,12 @@ name: Release (tag)
 # NOTE: cutting a tag here PUBLISHES the VS Code extension to the
 # Marketplace. Treat a release as externally visible at once.
 #
-# The notes come from scripts/release-notes.sh: one bullet per change on main
-# since the previous tag, and every API break override added in that range.
+# notes: changes makes the shared workflow write the list of changes: one
+# line per change on main since the previous tag, with no cap. It replaced
+# elps's own copy of that list, which stopped at 200 changes. The "Breaking
+# changes" section stays here, in scripts/release-notes-extra.sh, because only
+# elps has scripts/api-breaks.txt. It lists every API break override added
+# since the previous tag.
 
 on:
   workflow_dispatch:
@@ -46,7 +50,7 @@ jobs:
       actions: read # read the CI Tests runs for the release commit
       contents: read # verify the release; the Claude App token creates it
       id-token: write # Bedrock role and the Claude App token
-    uses: luthersystems/.github/.github/workflows/release-tag.yml@870afa409a35ed174b67d86c5ac4ed6da848cad8 # v1.9.1
+    uses: luthersystems/.github/.github/workflows/release-tag.yml@4e8bf04a35502684326dbb61d74b770dde397024 # v1.10.0
     with:
       version: ${{ inputs.version }}
       dry_run: ${{ inputs.dry_run }}
@@ -54,7 +58,8 @@ jobs:
       # A push run of CI Tests takes about 16 minutes.
       ci_wait_minutes: 30
       release_token: claude-app
-      notes_command: bash scripts/release-notes.sh
+      notes: changes
+      notes_extra_command: bash scripts/release-notes-extra.sh
       # ARM, as elps.yml's jobs run. The job builds nothing; the hosted ARM
       # image has the node and npm the shared workflow needs.
       runs_on: '"ubuntu-24.04-arm"'

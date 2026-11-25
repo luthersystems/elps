@@ -43,7 +43,7 @@ designed to be embedded within Go applications. Module:
 | `./elps analyze file.lisp` | Run performance analysis on lisp sources |
 | `./elps debug file.lisp` | Run a file under the DAP debugger |
 | `./elps mcp` | Start the ELPS MCP server over stdio |
-| `make release-notes` | Preview release notes (commits, PRs, CI status since last tag) |
+| `make release-notes` | Preview release notes (commits, PRs, CI status and the Breaking changes section since the last tag) |
 | `make release VERSION=v1.X.0` | Human fallback only; agents use the `release` skill |
 
 ### JSON engine (Go 1.27)
