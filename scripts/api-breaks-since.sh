@@ -2,7 +2,7 @@
 #
 # Print the API break overrides (scripts/api-breaks.txt, #761) added since a
 # tag: the waived breaking changes a release must list in its notes.  Used by
-# `make release-notes` and the release workflow (release-tag.yml).
+# `make release-notes` and scripts/release-notes-extra.sh (release-tag.yml).
 #
 #   bash scripts/api-breaks-since.sh <tag>      (`none` = no tag yet: all entries)
 

@@ -387,8 +387,10 @@ release-notes:
 		git log --oneline $(LATEST_TAG)..HEAD; \
 	fi
 	@echo ""
-	@echo "--- Waived API breaks since $(LATEST_TAG) (scripts/api-breaks.txt; list each in the notes) ---"
-	@bash scripts/api-breaks-since.sh $(LATEST_TAG)
+	@# The section release-tag.yml adds after the shared list of changes.
+	@echo "--- Breaking changes section (scripts/release-notes-extra.sh) ---"
+	@out=$$(LAST_TAG="$(filter-out none,$(LATEST_TAG))" bash scripts/release-notes-extra.sh) || exit 1; \
+	if [ -n "$$out" ]; then echo "$$out"; else echo "(none)"; fi
 	@echo ""
 	@echo "--- Merged PRs since $(LATEST_TAG) ---"
 	@if [ "$(LATEST_TAG)" = "none" ]; then \
